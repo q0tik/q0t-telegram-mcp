@@ -1,0 +1,16 @@
+{
+    "python.defaultInterpreterPath": "/Users/q0tik/Developer/q0t-telegram-mcp/.venv/bin/python3",
+    "files.exclude": {
+        "**/.git": true,
+        "**/.svn": true,
+        "**/.hg": true,
+        "**/.DS_Store": true,
+        "**/Thumbs.db": true,
+        "**/__pycache__": true
+    },
+    "python.testing.pytestArgs": [
+        "tests"
+    ],
+    "python.testing.unittestEnabled": false,
+    "python.testing.pytestEnabled": true
+}

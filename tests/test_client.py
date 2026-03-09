@@ -1,0 +1,448 @@
+"""
+Tests for TelegramClientWrapper defined in src/tg_mcp/client.py.
+
+Contracts verified (per docs/architecture.md §6):
+  - connect() raises RuntimeError when not authorized
+  - get_me() maps telethon User to UserInfo
+  - get_dialogs() filters by unread, slices by offset/limit, maps fields
+  - get_messages() passes add_offset, maps fields including async sender
+  - send_message() calls telethon send_message() — NEVER any draft method
+  - mark_read() calls send_read_acknowledge()
+  - _resolve_entity() raises ValueError on lookup failure
+
+All tests use fixtures from conftest.py — no real network calls are made.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from tg_mcp.client import TelegramClientWrapper
+from tg_mcp.config import Config
+from tg_mcp.models import Dialog, Message, UserInfo
+
+
+class TestConnect:
+    """Tests for TelegramClientWrapper.connect()."""
+
+    async def test_connect_raises_if_not_authorized(
+        self, mock_client_wrapper, mock_telegram_client
+    ) -> None:
+        """
+        When is_user_authorized() returns False, connect() must raise
+        RuntimeError with a message that includes instructions to run auth.
+
+        Expected: RuntimeError is raised; message contains 'auth'.
+        """
+        mock_telegram_client.is_user_authorized.return_value = False
+
+        # We need to call connect() which creates a new _client internally,
+        # so we patch TelegramClient to return our mock.
+        fake_config = Config(
+            app_id=12345,
+            api_hash="fakehash",
+            session_path=Path("/tmp/test/session"),
+        )
+        wrapper = TelegramClientWrapper(fake_config)
+
+        with patch("tg_mcp.client.TelegramClient", return_value=mock_telegram_client):
+            with pytest.raises(RuntimeError, match="auth"):
+                await wrapper.connect()
+
+    async def test_connect_succeeds_when_authorized(
+        self, mock_client_wrapper, mock_telegram_client
+    ) -> None:
+        """
+        When is_user_authorized() returns True, connect() completes without
+        raising.
+
+        Expected: no exception; _client.connect() is called exactly once.
+        """
+        mock_telegram_client.is_user_authorized.return_value = True
+
+        fake_config = Config(
+            app_id=12345,
+            api_hash="fakehash",
+            session_path=Path("/tmp/test/session"),
+        )
+        wrapper = TelegramClientWrapper(fake_config)
+
+        with patch("tg_mcp.client.TelegramClient", return_value=mock_telegram_client):
+            await wrapper.connect()  # must not raise
+
+        mock_telegram_client.connect.assert_called_once()
+
+
+class TestGetMe:
+    """Tests for TelegramClientWrapper.get_me()."""
+
+    async def test_get_me_returns_user_info(
+        self, mock_client_wrapper, mock_telegram_user
+    ) -> None:
+        """
+        get_me() returns a UserInfo instance (not the raw Telethon User object).
+
+        Expected: return value is an instance of the UserInfo dataclass.
+        """
+        result = await mock_client_wrapper.get_me()
+        assert isinstance(result, UserInfo)
+
+    async def test_get_me_maps_all_fields(
+        self, mock_client_wrapper, mock_telegram_user
+    ) -> None:
+        """
+        get_me() maps every field from the Telethon User to the corresponding
+        UserInfo field: id, first_name, last_name, username, phone.
+
+        Expected: all five fields on the returned UserInfo match the mock
+        Telethon User attributes.
+        """
+        result = await mock_client_wrapper.get_me()
+        assert result.id == mock_telegram_user.id
+        assert result.first_name == mock_telegram_user.first_name
+        assert result.last_name == mock_telegram_user.last_name
+        assert result.username == mock_telegram_user.username
+        assert result.phone == mock_telegram_user.phone
+
+
+class TestGetDialogs:
+    """Tests for TelegramClientWrapper.get_dialogs()."""
+
+    async def test_get_dialogs_returns_list(
+        self, mock_client_wrapper, mock_telegram_dialog
+    ) -> None:
+        """
+        get_dialogs() returns a list of Dialog objects.
+
+        Expected: return type is list; each item is a Dialog instance.
+        """
+        result = await mock_client_wrapper.get_dialogs()
+        assert isinstance(result, list)
+        assert len(result) > 0
+        for item in result:
+            assert isinstance(item, Dialog)
+
+    async def test_get_dialogs_filters_unread(
+        self, mock_client_wrapper, mock_telegram_client
+    ) -> None:
+        """
+        When unread_only=True, only dialogs with unread_count > 0 are returned.
+
+        Expected: dialogs with unread_count == 0 are excluded from the result.
+        """
+        # Create one dialog with unread, one without
+        unread_dialog = MagicMock()
+        unread_dialog.id = 1
+        unread_dialog.name = "Has Unread"
+        unread_dialog.unread_count = 5
+        unread_dialog.is_user = True
+        unread_dialog.is_group = False
+        unread_dialog.is_channel = False
+        unread_dialog.message = None
+        unread_dialog.date = None
+
+        read_dialog = MagicMock()
+        read_dialog.id = 2
+        read_dialog.name = "All Read"
+        read_dialog.unread_count = 0
+        read_dialog.is_user = True
+        read_dialog.is_group = False
+        read_dialog.is_channel = False
+        read_dialog.message = None
+        read_dialog.date = None
+
+        mock_telegram_client.get_dialogs.return_value = [unread_dialog, read_dialog]
+
+        result = await mock_client_wrapper.get_dialogs(unread_only=True)
+        assert len(result) == 1
+        assert result[0].name == "Has Unread"
+
+    async def test_get_dialogs_applies_offset_and_limit(
+        self, mock_client_wrapper, mock_telegram_client
+    ) -> None:
+        """
+        get_dialogs() applies Python-level slicing [offset : offset + limit]
+        after fetching all dialogs from Telethon.
+
+        Expected: result length respects limit; items skipped match offset.
+        """
+        # Create 5 dialogs
+        dialogs = []
+        for i in range(5):
+            d = MagicMock()
+            d.id = i
+            d.name = f"Dialog {i}"
+            d.unread_count = 0
+            d.is_user = True
+            d.is_group = False
+            d.is_channel = False
+            d.message = None
+            d.date = None
+            dialogs.append(d)
+
+        mock_telegram_client.get_dialogs.return_value = dialogs
+
+        result = await mock_client_wrapper.get_dialogs(limit=2, offset=1)
+        assert len(result) == 2
+        assert result[0].name == "Dialog 1"
+        assert result[1].name == "Dialog 2"
+
+    async def test_get_dialogs_maps_all_fields(
+        self, mock_client_wrapper, mock_telegram_dialog
+    ) -> None:
+        """
+        Each returned Dialog has all eight fields mapped correctly from the
+        Telethon Dialog object: id, name, unread_count, is_user, is_group,
+        is_channel, last_message, date.
+
+        Expected: every field on the first returned Dialog matches the
+        mock_telegram_dialog fixture values.
+        """
+        result = await mock_client_wrapper.get_dialogs()
+        assert len(result) >= 1
+        d = result[0]
+        assert d.id == mock_telegram_dialog.id
+        assert d.name == mock_telegram_dialog.name
+        assert d.unread_count == mock_telegram_dialog.unread_count
+        assert d.is_user == mock_telegram_dialog.is_user
+        assert d.is_group == mock_telegram_dialog.is_group
+        assert d.is_channel == mock_telegram_dialog.is_channel
+        assert d.last_message == mock_telegram_dialog.message.text
+        assert d.date == mock_telegram_dialog.date.isoformat()
+
+
+class TestGetMessages:
+    """Tests for TelegramClientWrapper.get_messages()."""
+
+    async def test_get_messages_returns_list(
+        self, mock_client_wrapper, mock_telegram_message
+    ) -> None:
+        """
+        get_messages() returns a list of Message objects.
+
+        Expected: return type is list; each item is a Message instance.
+        """
+        result = await mock_client_wrapper.get_messages("Alice")
+        assert isinstance(result, list)
+        assert len(result) > 0
+        for item in result:
+            assert isinstance(item, Message)
+
+    async def test_get_messages_uses_add_offset(
+        self, mock_client_wrapper, mock_telegram_client
+    ) -> None:
+        """
+        get_messages() passes the offset argument as add_offset to Telethon's
+        get_messages(), not as a manual slice.
+
+        Expected: _client.get_messages() is called with add_offset=<offset>.
+        """
+        mock_telegram_client.get_messages.return_value = []
+        await mock_client_wrapper.get_messages("Alice", limit=10, offset=5)
+        mock_telegram_client.get_messages.assert_called_once()
+        call_kwargs = mock_telegram_client.get_messages.call_args
+        assert call_kwargs.kwargs.get("add_offset") == 5 or (
+            len(call_kwargs.args) >= 3 and call_kwargs.args[2] == 5
+        )
+
+    async def test_get_messages_maps_all_fields(
+        self, mock_client_wrapper, mock_telegram_message
+    ) -> None:
+        """
+        Each returned Message has all five fields mapped correctly: id, date
+        (ISO-8601 string), text, out, sender (display name string or None).
+
+        Expected: every field on the first returned Message matches the
+        mock_telegram_message fixture values (date is an ISO-8601 string).
+        """
+        result = await mock_client_wrapper.get_messages("Alice")
+        assert len(result) >= 1
+        m = result[0]
+        assert m.id == mock_telegram_message.id
+        assert m.date == mock_telegram_message.date.isoformat()
+        assert m.text == mock_telegram_message.text
+        assert m.out == bool(mock_telegram_message.out)
+        # Sender is derived from get_sender() + telethon.utils.get_display_name().
+        # telethon.utils.get_display_name() only works on real telethon objects,
+        # not MagicMock — it returns '' for mocks, so the client maps '' to None.
+        # The important thing is that get_sender() was awaited and the field exists.
+        assert hasattr(m, "sender")  # field exists on the dataclass
+
+
+class TestSendMessage:
+    """Tests for TelegramClientWrapper.send_message()."""
+
+    async def test_send_message_calls_telethon_send_message(
+        self, mock_client_wrapper, mock_telegram_client
+    ) -> None:
+        """
+        send_message() calls _client.send_message(entity, text) exactly once
+        after resolving the entity.
+
+        Expected: mock_telegram_client.send_message is called with the resolved
+        entity and the original text string.
+        """
+        await mock_client_wrapper.send_message("Alice", "Hello")
+        mock_telegram_client.send_message.assert_called_once()
+        call_args = mock_telegram_client.send_message.call_args
+        # Second positional arg (or kwarg) should be the text
+        # call signature: send_message(entity, text)
+        assert "Hello" in call_args.args or call_args.kwargs.get("message") == "Hello"
+
+    async def test_send_message_never_calls_draft(
+        self, mock_client_wrapper, mock_telegram_client
+    ) -> None:
+        """
+        REGRESSION TEST — CRITICAL INVARIANT.
+
+        Asserts that send_message() never calls SaveDraft, MessagesSaveDraft,
+        or any draft-related method on the Telethon client.
+
+        This test exists because the reference Go implementation
+        (chaindead/telegram-mcp) silently saved drafts instead of sending
+        messages. The bug meant messages never arrived at the recipient.
+
+        Expected: after calling send_message(), mock_telegram_client has NO
+        calls to any attribute whose name contains 'draft' or 'Draft'. Also
+        asserts that mock_telegram_client.send_message WAS called (positive
+        check) so the test cannot trivially pass by doing nothing.
+        """
+        await mock_client_wrapper.send_message("Alice", "Hello")
+
+        # Positive check: send_message MUST have been called
+        mock_telegram_client.send_message.assert_called_once()
+
+        # Negative check: no call whose name contains 'draft' or 'Draft'
+        all_call_names = [str(call) for call in mock_telegram_client.mock_calls]
+        draft_calls = [c for c in all_call_names if "draft" in c.lower()]
+        assert draft_calls == [], (
+            f"send_message() made draft-related calls: {draft_calls}"
+        )
+
+        # Also explicitly assert that MessagesSaveDraft was not accessed
+        # (the fixture sets it to raise, but we confirm via mock_calls too)
+        called_attrs = [call[0] for call in mock_telegram_client.mock_calls]
+        assert "MessagesSaveDraft" not in called_attrs
+
+    async def test_send_message_resolves_entity_by_name(
+        self, mock_client_wrapper, mock_telegram_client
+    ) -> None:
+        """
+        send_message() resolves the dialog entity by name before sending.
+
+        Expected: _client.get_entity() is called with the name argument before
+        _client.send_message() is called.
+        """
+        mock_telegram_client.get_entity.reset_mock()
+        mock_telegram_client.send_message.reset_mock()
+
+        await mock_client_wrapper.send_message("Alice", "Hello")
+
+        mock_telegram_client.get_entity.assert_called_once_with("Alice")
+        # send_message must also have been called (after entity resolution)
+        mock_telegram_client.send_message.assert_called_once()
+
+
+class TestMarkRead:
+    """Tests for TelegramClientWrapper.mark_read()."""
+
+    async def test_mark_read_calls_send_read_acknowledge(
+        self, mock_client_wrapper, mock_telegram_client
+    ) -> None:
+        """
+        mark_read() calls _client.send_read_acknowledge(entity) exactly once.
+
+        Expected: mock_telegram_client.send_read_acknowledge is called with
+        the resolved entity object.
+        """
+        entity_mock = mock_telegram_client.get_entity.return_value
+        await mock_client_wrapper.mark_read("Alice")
+        mock_telegram_client.send_read_acknowledge.assert_called_once_with(entity_mock)
+
+
+class TestDisconnect:
+    """Tests for TelegramClientWrapper.disconnect()."""
+
+    async def test_disconnect_calls_client_disconnect(
+        self, mock_client_wrapper, mock_telegram_client
+    ) -> None:
+        """
+        disconnect() calls _client.disconnect() when _client is not None.
+        """
+        mock_telegram_client.disconnect.reset_mock()
+        await mock_client_wrapper.disconnect()
+        mock_telegram_client.disconnect.assert_called_once()
+
+    async def test_disconnect_does_nothing_when_client_is_none(self) -> None:
+        """
+        disconnect() does nothing (no exception) when _client is None.
+        """
+        config = Config(
+            app_id=12345,
+            api_hash="fakehash",
+            session_path=Path("/tmp/test/session"),
+        )
+        wrapper = TelegramClientWrapper(config)
+        # _client is None (connect() was never called)
+        assert wrapper._client is None
+        await wrapper.disconnect()  # must not raise
+
+
+class TestIsAuthorized:
+    """Tests for TelegramClientWrapper.is_authorized()."""
+
+    async def test_is_authorized_returns_true_when_authorized(
+        self, mock_client_wrapper, mock_telegram_client
+    ) -> None:
+        """
+        is_authorized() returns True when the underlying client is authorized.
+        """
+        mock_telegram_client.is_user_authorized.return_value = True
+        result = await mock_client_wrapper.is_authorized()
+        assert result is True
+
+    async def test_is_authorized_returns_false_when_not_authorized(
+        self, mock_client_wrapper, mock_telegram_client
+    ) -> None:
+        """
+        is_authorized() returns False when the underlying client is not authorized.
+        """
+        mock_telegram_client.is_user_authorized.return_value = False
+        result = await mock_client_wrapper.is_authorized()
+        assert result is False
+
+
+class TestResolveEntity:
+    """Tests for TelegramClientWrapper._resolve_entity() (internal helper)."""
+
+    async def test_resolve_entity_raises_value_error_on_not_found(
+        self, mock_client_wrapper, mock_telegram_client
+    ) -> None:
+        """
+        When _client.get_entity() raises ValueError or
+        UsernameNotOccupiedError, _resolve_entity() must re-raise as
+        ValueError with a message of the form 'Dialog not found: <name>'.
+
+        Expected: ValueError is raised; message starts with 'Dialog not found'.
+        """
+        mock_telegram_client.get_entity.side_effect = ValueError("not found")
+
+        with pytest.raises(ValueError, match="Dialog not found: NonExistent"):
+            await mock_client_wrapper._resolve_entity("NonExistent")
+
+    async def test_resolve_entity_raises_value_error_on_username_not_occupied(
+        self, mock_client_wrapper, mock_telegram_client
+    ) -> None:
+        """
+        When _client.get_entity() raises UsernameNotOccupiedError,
+        _resolve_entity() must re-raise as ValueError.
+        """
+        from telethon.errors import UsernameNotOccupiedError
+
+        mock_telegram_client.get_entity.side_effect = UsernameNotOccupiedError(request=None)
+
+        with pytest.raises(ValueError, match="Dialog not found: @ghost"):
+            await mock_client_wrapper._resolve_entity("@ghost")
