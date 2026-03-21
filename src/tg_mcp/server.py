@@ -1,10 +1,8 @@
-from __future__ import annotations
-
 import dataclasses
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Annotated
+from typing import Annotated, Optional
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp import Context
@@ -45,13 +43,13 @@ mcp = FastMCP("q0t-telegram-mcp", lifespan=lifespan)
 # Type aliases for recurring parameter patterns
 # ---------------------------------------------------------------------------
 
-DialogId = Annotated[int | None, Field(
+DialogId = Annotated[Optional[int], Field(
     description="Numeric ID from tg_dialogs. Most reliable, no ambiguity.",
 )]
-Username = Annotated[str | None, Field(
+Username = Annotated[Optional[str], Field(
     description="Telegram @handle, e.g. 'adilet_c' (leading @ optional).",
 )]
-DisplayName = Annotated[str | None, Field(
+DisplayName = Annotated[Optional[str], Field(
     description="Display name. Use only when dialog_id/username are unavailable; may be ambiguous.",
 )]
 
@@ -131,7 +129,7 @@ async def tg_send_file(
     dialog_id: DialogId = None,
     username: Username = None,
     name: DisplayName = None,
-    caption: Annotated[str | None, Field(description="Optional text caption to attach to the file.")] = None,
+    caption: Annotated[Optional[str], Field(description="Optional text caption to attach to the file.")] = None,
 ) -> dict:
     """Send a file to a Telegram dialog. Supply exactly one of dialog_id, username, or name. Priority: dialog_id > username > name."""
     if dialog_id is None and username is None and name is None:
@@ -154,12 +152,12 @@ async def tg_send_file(
 async def tg_forward(
     ctx: Context,
     message_id: Annotated[int, Field(description="ID of the message to forward (from tg_dialog results).")],
-    from_dialog_id: Annotated[int | None, Field(description="Source dialog numeric ID.")] = None,
-    from_username: Annotated[str | None, Field(description="Source dialog @handle.")] = None,
-    from_name: Annotated[str | None, Field(description="Source dialog display name.")] = None,
-    to_dialog_id: Annotated[int | None, Field(description="Destination dialog numeric ID.")] = None,
-    to_username: Annotated[str | None, Field(description="Destination dialog @handle.")] = None,
-    to_name: Annotated[str | None, Field(description="Destination dialog display name.")] = None,
+    from_dialog_id: Annotated[Optional[int], Field(description="Source dialog numeric ID.")] = None,
+    from_username: Annotated[Optional[str], Field(description="Source dialog @handle.")] = None,
+    from_name: Annotated[Optional[str], Field(description="Source dialog display name.")] = None,
+    to_dialog_id: Annotated[Optional[int], Field(description="Destination dialog numeric ID.")] = None,
+    to_username: Annotated[Optional[str], Field(description="Destination dialog @handle.")] = None,
+    to_name: Annotated[Optional[str], Field(description="Destination dialog display name.")] = None,
 ) -> dict:
     """Forward a message from one dialog to another. Supply exactly one source selector (from_*) and one destination selector (to_*)."""
     if from_dialog_id is None and from_username is None and from_name is None:
