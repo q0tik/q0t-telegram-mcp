@@ -95,8 +95,9 @@ One entry in the list returned by `tg_dialogs`.
 
 ```
 Dialog
-  id:            int       # Marked entity ID (unique)
-  name:          str       # Display name (first+last for users, title for groups/channels)
+  id:            int         # Marked entity ID (unique)
+  name:          str         # Display name (first+last for users, title for groups/channels)
+  username:      str | None  # @handle without leading @; None for groups/channels without a public handle
   unread_count:  int
   is_user:       bool
   is_group:      bool
@@ -141,10 +142,10 @@ TelegramClientWrapper
   async is_authorized() -> bool
   async get_me() -> UserInfo
   async get_dialogs(unread_only: bool, limit: int, offset: int) -> list[Dialog]
-  async get_messages(name: str, limit: int, offset: int) -> list[Message]
-  async send_message(name: str, text: str) -> None
-  async mark_read(name: str) -> None
-  async _resolve_entity(name: str) -> Any   # internal: resolve dialog name to entity
+  async get_messages(dialog_id: int | None, username: str | None, name: str | None, limit: int, offset: int) -> list[Message]
+  async send_message(text: str, dialog_id: int | None, username: str | None, name: str | None) -> None
+  async mark_read(dialog_id: int | None, username: str | None, name: str | None) -> None
+  async _resolve_entity(dialog_id: int | None, username: str | None, name: str | None) -> Any   # internal
 
 
 AuthFlow
@@ -203,6 +204,7 @@ class TelegramClientWrapper:
 - Map each telethon `Dialog` object:
   - `id = d.id`
   - `name = d.name`
+  - `username = getattr(d.entity, "username", None)`
   - `unread_count = d.unread_count`
   - `is_user = d.is_user`
   - `is_group = d.is_group`
@@ -210,8 +212,8 @@ class TelegramClientWrapper:
   - `last_message = d.message.text if d.message else None`
   - `date = d.date.isoformat() if d.date else None`
 
-#### `async get_messages(name: str, limit: int = 20, offset: int = 0) -> list[Message]`
-- Resolves entity: `entity = await self._client.get_entity(name)`
+#### `async get_messages(dialog_id: int | None, username: str | None, name: str | None, limit: int = 20, offset: int = 0) -> list[Message]`
+- Resolves entity: `entity = await self._resolve_entity(dialog_id=dialog_id, username=username, name=name)`
 - Calls `msgs = await self._client.get_messages(entity, limit=limit, add_offset=offset)`
   - Telethon `get_messages()` supports `add_offset` for integer-based pagination
 - Map each telethon `Message` to our `Message` model:
@@ -221,23 +223,24 @@ class TelegramClientWrapper:
   - `out = bool(m.out)`
   - `sender`: call `await m.get_sender()`, then use `telethon.utils.get_display_name(sender)` — may be None for channel posts
 
-#### `async send_message(name: str, text: str) -> None`
-- Resolves entity: `entity = await self._client.get_entity(name)`
+#### `async send_message(text: str, dialog_id: int | None, username: str | None, name: str | None) -> None`
+- Resolves entity: `entity = await self._resolve_entity(dialog_id=dialog_id, username=username, name=name)`
 - **CRITICAL**: calls `await self._client.send_message(entity, text)`
 - NEVER calls anything draft-related (`SaveDraft`, `MessagesSaveDraft`, `draft`, etc.)
 
-#### `async mark_read(name: str) -> None`
-- Resolves entity: `entity = await self._client.get_entity(name)`
+#### `async mark_read(dialog_id: int | None, username: str | None, name: str | None) -> None`
+- Resolves entity: `entity = await self._resolve_entity(dialog_id=dialog_id, username=username, name=name)`
 - Calls `await self._client.send_read_acknowledge(entity)`
 
-### Entity resolution note
+### Entity resolution — `_resolve_entity`
 
-`get_entity(name: str)` accepts:
-- Username strings like `"username"` or `"@username"` — Telethon handles both
-- Phone numbers like `"+1234567890"`
-- Integer IDs as strings are NOT reliable; prefer by-name lookup
+All three entity-accepting methods delegate to `_resolve_entity`, which applies a fixed priority:
 
-If `get_entity` raises `ValueError` or `UsernameNotOccupiedError`, wrap and re-raise as `ValueError(f"Dialog not found: {name}")`.
+1. **`dialog_id`** (int) — calls `get_entity(dialog_id)`. Most reliable; raises `ValueError` on failure.
+2. **`username`** (str) — strips a leading `@`, then calls `get_entity(handle)`. Catches `ValueError` and `UsernameNotOccupiedError`.
+3. **`name`** (str) — display names are NOT accepted by `get_entity`. Instead, the method iterates `iter_dialogs()` looking for an exact `dialog.name` match. Slowest path; may match the wrong entity when names are not unique.
+
+Raises `ValueError("One of dialog_id, username, or name must be provided")` if all three are `None`.
 
 ---
 
@@ -279,6 +282,8 @@ Parameters:
   limit:       int  = 20    — max number of dialogs to return
   offset:      int  = 0     — number of dialogs to skip (for pagination)
 Returns:     list[dict] (serialized list[Dialog])
+             Each dict includes: id, name, username (str or null), unread_count,
+             is_user, is_group, is_channel, last_message, date
 Calls:       client.get_dialogs(unread_only, limit, offset)
 ```
 
@@ -288,11 +293,15 @@ Calls:       client.get_dialogs(unread_only, limit, offset)
 Name:        tg_dialog
 Description: Get messages from a Telegram dialog
 Parameters:
-  name:   str       — dialog display name, username, or phone number
-  limit:  int = 20  — max number of messages to return
-  offset: int = 0   — number of messages to skip (for pagination)
+  dialog_id: int | None = None  — numeric ID from tg_dialogs; most reliable
+  username:  str | None = None  — Telegram @handle (leading @ optional)
+  name:      str | None = None  — display name; least reliable (may match wrong contact)
+  limit:     int = 20           — max number of messages to return
+  offset:    int = 0            — number of messages to skip (for pagination)
+  At least one of dialog_id / username / name must be provided.
+  Priority: dialog_id > username > name
 Returns:     list[dict] (serialized list[Message])
-Calls:       client.get_messages(name, limit, offset)
+Calls:       client.get_messages(dialog_id, username, name, limit, offset)
 ```
 
 ### Tool: `tg_send`
@@ -301,10 +310,14 @@ Calls:       client.get_messages(name, limit, offset)
 Name:        tg_send
 Description: Send a message to a Telegram dialog
 Parameters:
-  name: str  — dialog display name, username, or phone number
-  text: str  — message text to send
+  dialog_id: int | None = None  — numeric ID from tg_dialogs; most reliable
+  username:  str | None = None  — Telegram @handle (leading @ optional)
+  name:      str | None = None  — display name; least reliable (may match wrong contact)
+  text:      str                — message text to send
+  At least one of dialog_id / username / name must be provided.
+  Priority: dialog_id > username > name
 Returns:     dict {"ok": true}
-Calls:       client.send_message(name, text)
+Calls:       client.send_message(text, dialog_id, username, name)
 INVARIANT:   MUST call telethon send_message(), NEVER SaveDraft/MessagesSaveDraft
 ```
 
@@ -314,9 +327,13 @@ INVARIANT:   MUST call telethon send_message(), NEVER SaveDraft/MessagesSaveDraf
 Name:        tg_read
 Description: Mark all messages in a dialog as read
 Parameters:
-  name: str  — dialog display name, username, or phone number
+  dialog_id: int | None = None  — numeric ID from tg_dialogs; most reliable
+  username:  str | None = None  — Telegram @handle (leading @ optional)
+  name:      str | None = None  — display name; least reliable (may match wrong contact)
+  At least one of dialog_id / username / name must be provided.
+  Priority: dialog_id > username > name
 Returns:     dict {"ok": true}
-Calls:       client.mark_read(name)
+Calls:       client.mark_read(dialog_id, username, name)
 ```
 
 ### Server instantiation
@@ -547,13 +564,14 @@ In the Go reference (`serve.go`), the MCP tool advertises parameter `to` but the
 
 ```
 Claude Code
-    │  call_tool("tg_send", {name: "Alice", text: "Hello"})
+    │  call_tool("tg_send", {dialog_id: 123456789, text: "Hello"})
     ▼
 FastMCP (server.py)
-    │  invoke tg_send(name="Alice", text="Hello", ctx=...)
+    │  invoke tg_send(dialog_id=123456789, text="Hello", ctx=...)
     ▼
 TelegramClientWrapper (client.py)
-    │  entity = await self._client.get_entity("Alice")
+    │  entity = await _resolve_entity(dialog_id=123456789)
+    │    → await self._client.get_entity(123456789)
     │  await self._client.send_message(entity, "Hello")   ← MUST be this, not SaveDraft
     ▼
 Telethon → Telegram MTProto API

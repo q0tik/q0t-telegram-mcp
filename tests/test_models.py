@@ -90,6 +90,7 @@ class TestDialog:
         dialog = Dialog(
             id=987654321,
             name="Alice Smith",
+            username="alicesmith",
             unread_count=3,
             is_user=True,
             is_group=False,
@@ -99,6 +100,7 @@ class TestDialog:
         )
         assert dialog.id == 987654321
         assert dialog.name == "Alice Smith"
+        assert dialog.username == "alicesmith"
         assert dialog.unread_count == 3
         assert dialog.is_user is True
         assert dialog.is_group is False
@@ -116,6 +118,7 @@ class TestDialog:
         dialog = Dialog(
             id=1,
             name="Test",
+            username=None,
             unread_count=0,
             is_user=True,
             is_group=False,
@@ -135,6 +138,7 @@ class TestDialog:
         dialog = Dialog(
             id=1,
             name="Empty Chat",
+            username=None,
             unread_count=0,
             is_user=True,
             is_group=False,

@@ -51,3 +51,30 @@ You do not invent architecture — if the design is unclear or missing, you stop
 - Use `@click.group(invoke_without_command=True)` + `@click.pass_context` on the group.
 - Check `ctx.invoked_subcommand is None` to run the default action (MCP server).
 - This is the standard pattern since click has no native "default subcommand" support.
+
+---
+
+## Notes from implementation (2026-03-09)
+
+### Adding optional parameters to existing APIs
+- When adding optional parameters (`dialog_id`, `username`) alongside an existing required parameter (`name`), make all three optional (`= None`) in both client and server layers.
+- Add a `ValueError` guard at the server layer when all three are `None` (not in the client — the client's `_resolve_entity` already raises at the bottom).
+- Update every existing test that calls the old mandatory-`name` API; they need keyword argument style or the new signature will reject them.
+
+### Telethon `get_entity()` does NOT accept display names
+- `get_entity(str)` interprets the string as a @username or phone number. Passing a human display name like `"Alice Smith"` raises `ValueError` or `UsernameNotOccupiedError`.
+- Name-based resolution must use `iter_dialogs()` and scan `dialog.name` — never pass a display name to `get_entity()`.
+
+### Mocking `iter_dialogs()` as an async generator
+- `iter_dialogs()` is an async generator; returning a list from `AsyncMock` won't work.
+- Define a real `async def _fn(): yield item` inside the fixture and use `MagicMock(side_effect=lambda: _fn())` so each call returns a fresh async generator.
+- The conftest needs a dialog with `.name` matching what the tests call with (e.g. `"Alice"`) and a `.entity` attribute for the entity object.
+
+### Keeping conftest fixtures in sync with model changes
+- Adding a required field to a frozen dataclass breaks any test that instantiates it without the new field — grep all test files for the dataclass name and update every constructor call.
+- The conftest `mock_telegram_dialog` fixture should also grow a `.entity` attribute when `get_dialogs()` starts using `d.entity` — without it, `getattr(d.entity, "username", None)` returns a `MagicMock` (not `None`), which is acceptable but worth noting.
+
+### `_resolve_entity` signature change requires updating all callers
+- After changing `_resolve_entity(name: str)` to `_resolve_entity(dialog_id, username, name)`, all three public methods (`get_messages`, `send_message`, `mark_read`) must be updated to pass keyword arguments through.
+- Similarly, the server tools must pass all three selector kwargs to the client methods.
+- Tests that assert on mock call arguments (e.g. `assert_called_once_with(name="Alice")`) must be updated to match the new call signature.

@@ -13,15 +13,38 @@ This project fixes both and builds a reliable, well-tested replacement.
 
 ## MCP Tools
 
-| Tool | Parameters | Description |
-|------|-----------|-------------|
-| `tg_me` | — | Get current Telegram account info |
-| `tg_dialogs` | `unread_only` (bool, default `false`), `limit` (int, default `20`), `offset` (int, default `0`) | List dialogs (chats, groups, channels) |
-| `tg_dialog` | `name` (str), `limit` (int, default `20`), `offset` (int, default `0`) | Get messages from a dialog |
-| `tg_send` | `name` (str), `text` (str) | Send a message — calls `SendMessage`, never `SaveDraft` |
-| `tg_read` | `name` (str) | Mark all messages in a dialog as read |
+| Tool | Parameters | Returns | Description |
+|------|-----------|---------|-------------|
+| `tg_me` | — | `UserInfo` | Get current Telegram account info |
+| `tg_dialogs` | `unread_only` (bool, default `false`), `limit` (int, default `20`), `offset` (int, default `0`) | List of dialogs — each has `id`, `name`, `username` (or `null`), `unread_count`, type flags, `last_message`, `date` | List dialogs (chats, groups, channels) |
+| `tg_dialog` | `dialog_id` (int), `username` (str), or `name` (str) — at least one required; `limit` (int, default `20`), `offset` (int, default `0`) | List of messages | Get messages from a dialog |
+| `tg_send` | `dialog_id` (int), `username` (str), or `name` (str) — at least one required; `text` (str) | `{"ok": true}` | Send a message — calls `SendMessage`, never `SaveDraft` |
+| `tg_read` | `dialog_id` (int), `username` (str), or `name` (str) — at least one required | `{"ok": true}` | Mark all messages in a dialog as read |
 
-`name` accepts a display name, `@username`, or phone number (e.g. `+1234567890`).
+### Identifying a dialog
+
+Three selectors are available for `tg_dialog`, `tg_send`, and `tg_read`. Supply at least one:
+
+| Selector | Type | Notes |
+|----------|------|-------|
+| `dialog_id` | int | Numeric ID from `tg_dialogs`. Most reliable — always refers to exactly one entity. |
+| `username` | str | Telegram @handle. Leading `@` is accepted but not required. |
+| `name` | str | Display name (e.g. `"Alice"`). Least reliable — may match the wrong contact when names are not unique. |
+
+When more than one selector is supplied, priority is: `dialog_id > username > name`.
+
+## Disambiguation: when to use `dialog_id` vs `name`
+
+Use `name` only as a fallback. Two real problems arise when you rely on it:
+
+1. **Duplicate names.** If two contacts are both named "Adilet", name-based resolution scans your dialog list and picks whichever comes first — it may be the wrong person.
+2. **Display names are not Telegram handles.** Telethon's `get_entity()` cannot resolve a human display name like `"Алёна 😍"` directly. Under the hood this server scans your cached dialog list for an exact match, which is slower and can fail if the dialog is not yet cached.
+
+**Recommended workflow:**
+
+1. Call `tg_dialogs` to get the list. Each entry includes both `id` and `username` (when the contact has a public handle).
+2. Pass `dialog_id` (preferred) or `username` to `tg_send`, `tg_dialog`, and `tg_read`.
+3. Fall back to `name` only when neither `id` nor `username` is available (e.g. phone-only contacts without a handle).
 
 ## Prerequisites
 
@@ -36,16 +59,27 @@ Obtain API credentials from [https://my.telegram.org/apps](https://my.telegram.o
 
 No repository clone is needed. Use `uvx` to run directly from PyPI.
 
+API credentials (`TG_APP_ID` and `TG_API_HASH`) can be supplied either as environment variables
+or as CLI flags — flags take priority.
+
 ### First-time authentication
 
 ```bash
+# Via environment variables
 TG_APP_ID=your_app_id TG_API_HASH=your_api_hash uvx q0t-telegram-mcp auth --phone +1234567890
+
+# Via CLI flags (no env vars needed)
+uvx q0t-telegram-mcp auth --phone +1234567890 --app-id your_app_id --api-hash your_api_hash
 ```
 
 ### With 2FA enabled
 
 ```bash
+# Via environment variables
 TG_APP_ID=your_app_id TG_API_HASH=your_api_hash uvx q0t-telegram-mcp auth --phone +1234567890 --password your_2fa_password
+
+# Via CLI flags
+uvx q0t-telegram-mcp auth --phone +1234567890 --app-id your_app_id --api-hash your_api_hash --password your_2fa_password
 ```
 
 You will be prompted to enter the OTP sent to your Telegram app (or SMS). After successful authentication, a session file is saved locally and subsequent connections reuse it automatically.
