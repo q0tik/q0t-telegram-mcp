@@ -156,3 +156,65 @@ with patch.object(mcp, "run") as mock_run:
     run_server()
     mock_run.assert_called_once()
 ```
+
+---
+
+## Learnings from Phase 3 (Task 2: Disambiguation)
+
+### Testing entity selector priority at the server layer
+
+The server tools (`tg_send`, `tg_dialog`, `tg_read`) forward all three selectors to the client
+as kwargs; they do not apply priority themselves. Priority is resolved inside `_resolve_entity`
+in `client.py`. Server-layer tests therefore assert that both supplied selectors are forwarded,
+not that one is dropped:
+
+```python
+client.send_message.assert_called_once_with(
+    text="Hi", dialog_id=99, username="alice", name=None
+)
+```
+
+### Testing _resolve_entity priority directly
+
+For client-layer priority tests, call `_resolve_entity()` directly and assert which
+`get_entity()` call was made (int vs str) and whether `iter_dialogs` was invoked:
+
+```python
+await wrapper._resolve_entity(dialog_id=99, username="somehandle")
+call_arg = mock_telegram_client.get_entity.call_args.args[0]
+assert isinstance(call_arg, int)   # dialog_id branch was taken
+```
+
+For username-vs-name priority:
+```python
+await wrapper._resolve_entity(username="handle", name="Alice")
+mock_telegram_client.get_entity.assert_called_once_with("handle")
+mock_telegram_client.iter_dialogs.assert_not_called()
+```
+
+### Empty async generator for iter_dialogs "not found" tests
+
+```python
+async def _empty_iter():
+    return
+    yield  # pragma: no cover — makes it an async generator without yielding
+
+mock_telegram_client.iter_dialogs = MagicMock(side_effect=lambda: _empty_iter())
+```
+
+### MagicMock with empty spec to simulate missing attribute
+
+To test that `getattr(entity, "username", None)` returns `None` when the attribute truly
+doesn't exist (not just when it's `None`), use `spec=[]`:
+
+```python
+entity_stub = MagicMock(spec=[])   # no attributes — getattr returns None via default
+group_dialog.entity = entity_stub
+```
+
+### Username field in Dialog dict (tg_dialogs server test)
+
+The server test for `username` works against the `_make_mock_client()` helper which already
+constructs `Dialog(username="alicesmith", ...)`. No extra patching is needed for the
+happy-path case; for the `None` case, override `client.get_dialogs` with a Dialog that
+has `username=None`.

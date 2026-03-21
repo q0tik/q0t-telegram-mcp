@@ -47,3 +47,11 @@ Good documentation explains the *why*, not just the *what*. Someone unfamiliar w
 - Tables work well for parameter lists and environment variables.
 - Architecture note: mirror the error-handling table from the architecture doc — it's the most useful thing for a developer who inherits the code.
 - Keep the note about the `tg_send` invariant prominent in both the overview and architecture notes — it's the whole reason the project exists.
+- `mcp__obsidian__patch_note` with `insertAfter` is NOT supported — it requires `oldString`/`newString`. Use `mcp__obsidian__write_note` with `overwrite: true` for full rewrites.
+- When a tool's parameter set changes significantly (e.g. adding new selectors), rewrite the entire tools.md note rather than trying to patch individual sections — it's faster and avoids stale content.
+
+### Documenting multi-selector parameters
+
+- When a tool accepts multiple mutually-substitutable selectors (like `dialog_id / username / name`), dedicate a shared reference table at the top of the tools section rather than repeating the same table in every tool entry.
+- Always state the priority ordering and the "at least one required" constraint explicitly — MCP has no native OneOf type, so this must live in plain text.
+- In the README, pair the tool table with a "Disambiguation" section that explains *when* to use each selector. The table tells you *what* exists; the disambiguation section tells you *why* to pick one over another.

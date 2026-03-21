@@ -73,3 +73,14 @@ Each agent reads their role from `agents/<ROLE>.md` and their task from the assi
 Every agent must do this before ending the session:
 - Update your own `agents/<ROLE>.md` with anything you learned that would help next time (gotchas, useful patterns, decisions made)
 - If the project structure changed or something in CLAUDE.md is now outdated, fix it
+
+## Rule for orchestrator (tech lead)
+
+If you directly modify any code — even a small fix — you **must** spawn a DOCUMENTER agent
+afterwards to sync the docs. Do not skip this step.
+
+DOCUMENTER's job: ensure `README.md`, `docs/`, and any Obsidian notes reflect the actual
+current behaviour of the code. If the code changed, the docs are stale until DOCUMENTER runs.
+
+Example: you fix auth to accept `--app-id` / `--api-hash` CLI args in addition to env vars →
+spawn DOCUMENTER → it updates the README auth section to show both options.
