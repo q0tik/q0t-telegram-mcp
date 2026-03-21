@@ -22,7 +22,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock
 
 from tg_mcp.models import Dialog, Message, UserInfo
-from tg_mcp.server import tg_me, tg_dialogs, tg_dialog, tg_send, tg_read
+from tg_mcp.server import tg_me, tg_dialogs, tg_dialog, tg_send, tg_send_file, tg_forward, tg_read
 
 
 # ---------------------------------------------------------------------------
@@ -51,6 +51,7 @@ def _make_mock_client():
         Dialog(
             id=987654321,
             name="Alice Smith",
+            username="alicesmith",
             unread_count=3,
             is_user=True,
             is_group=False,
@@ -69,6 +70,8 @@ def _make_mock_client():
         )
     ])
     client.send_message = AsyncMock(return_value=None)
+    client.send_file = AsyncMock(return_value=None)
+    client.forward_message = AsyncMock(return_value=None)
     client.mark_read = AsyncMock(return_value=None)
     return client
 
@@ -224,6 +227,50 @@ class TestTgDialogs:
         assert "last_message" in d
         assert "date" in d
 
+    async def test_tg_dialogs_returns_username_for_user(
+        self, mock_client_wrapper
+    ) -> None:
+        """
+        When the dialog entity has a username (a user), tg_dialogs() returns a
+        dict whose 'username' field is populated with the handle string.
+
+        Expected: result[0]["username"] == "alicesmith"
+        """
+        client = _make_mock_client()
+        ctx = _make_ctx(client)
+        # _make_mock_client already sets username="alicesmith" on the Dialog
+        result = await tg_dialogs(ctx)
+        assert "username" in result[0]
+        assert result[0]["username"] == "alicesmith"
+
+    async def test_tg_dialogs_returns_username_none_for_group(
+        self, mock_client_wrapper
+    ) -> None:
+        """
+        When the dialog entity has no username (a group without a public link),
+        tg_dialogs() returns a dict whose 'username' field is None.
+
+        Expected: result[0]["username"] is None
+        """
+        client = _make_mock_client()
+        client.get_dialogs = AsyncMock(return_value=[
+            Dialog(
+                id=111,
+                name="My Group",
+                username=None,
+                unread_count=0,
+                is_user=False,
+                is_group=True,
+                is_channel=False,
+                last_message=None,
+                date=None,
+            )
+        ])
+        ctx = _make_ctx(client)
+        result = await tg_dialogs(ctx)
+        assert "username" in result[0]
+        assert result[0]["username"] is None
+
 
 class TestTgDialog:
     """Tests for the tg_dialog MCP tool."""
@@ -255,7 +302,9 @@ class TestTgDialog:
         client = _make_mock_client()
         ctx = _make_ctx(client)
         await tg_dialog(ctx, name="Alice")
-        client.get_messages.assert_called_once_with(name="Alice", limit=20, offset=0)
+        client.get_messages.assert_called_once_with(
+            dialog_id=None, username=None, name="Alice", limit=20, offset=0
+        )
 
     async def test_tg_dialog_passes_limit_and_offset(
         self, mock_client_wrapper
@@ -266,7 +315,9 @@ class TestTgDialog:
         client = _make_mock_client()
         ctx = _make_ctx(client)
         await tg_dialog(ctx, name="Alice", limit=5, offset=3)
-        client.get_messages.assert_called_once_with(name="Alice", limit=5, offset=3)
+        client.get_messages.assert_called_once_with(
+            dialog_id=None, username=None, name="Alice", limit=5, offset=3
+        )
 
     async def test_tg_dialog_error_returns_error_dict(
         self, mock_client_wrapper
@@ -311,7 +362,9 @@ class TestTgSend:
         client = _make_mock_client()
         ctx = _make_ctx(client)
         await tg_send(ctx, name="Alice", text="Hello")
-        client.send_message.assert_called_once_with(name="Alice", text="Hello")
+        client.send_message.assert_called_once_with(
+            text="Hello", dialog_id=None, username=None, name="Alice"
+        )
 
     async def test_tg_send_parameter_is_named_name(
         self, mock_client_wrapper
@@ -348,13 +401,109 @@ class TestTgSend:
         """
         client = _make_mock_client()
         client.send_message = AsyncMock(
-            side_effect=ValueError("Dialog not found: Alice")
+            side_effect=ValueError("Dialog not found: name=Alice")
         )
         ctx = _make_ctx(client)
         result = await tg_send(ctx, name="Alice", text="Hello")
         assert isinstance(result, dict)
         assert "error" in result
         assert "Alice" in result["error"]
+
+
+class TestTgSendFile:
+    """Tests for the tg_send_file MCP tool."""
+
+    async def test_tg_send_file_returns_ok(self, mock_client_wrapper) -> None:
+        """On success, tg_send_file() returns {"ok": True}."""
+        client = _make_mock_client()
+        ctx = _make_ctx(client)
+        result = await tg_send_file(ctx, name="Alice", file_path="/tmp/test.txt")
+        assert result == {"ok": True}
+
+    async def test_tg_send_file_passes_all_params(self, mock_client_wrapper) -> None:
+        """tg_send_file() passes file_path, caption, and dialog selector to client."""
+        client = _make_mock_client()
+        ctx = _make_ctx(client)
+        await tg_send_file(ctx, name="Alice", file_path="/tmp/f.txt", caption="hi")
+        client.send_file.assert_called_once_with(
+            file_path="/tmp/f.txt", dialog_id=None, username=None, name="Alice", caption="hi"
+        )
+
+    async def test_tg_send_file_no_selector_raises(self, mock_client_wrapper) -> None:
+        """tg_send_file() raises ValueError when no dialog selector is given."""
+        client = _make_mock_client()
+        ctx = _make_ctx(client)
+        with pytest.raises(ValueError, match="One of dialog_id, username, or name"):
+            await tg_send_file(ctx, file_path="/tmp/f.txt")
+
+    async def test_tg_send_file_error_returns_error_dict(self, mock_client_wrapper) -> None:
+        """When send_file() raises ValueError, tg_send_file returns {"error": ...}."""
+        client = _make_mock_client()
+        client.send_file = AsyncMock(side_effect=ValueError("Dialog not found"))
+        ctx = _make_ctx(client)
+        result = await tg_send_file(ctx, name="Nobody", file_path="/tmp/f.txt")
+        assert "error" in result
+
+    async def test_tg_send_file_with_dialog_id(self, mock_client_wrapper) -> None:
+        """tg_send_file() works with dialog_id."""
+        client = _make_mock_client()
+        ctx = _make_ctx(client)
+        result = await tg_send_file(ctx, dialog_id=123, file_path="/tmp/f.txt")
+        assert result == {"ok": True}
+        client.send_file.assert_called_once_with(
+            file_path="/tmp/f.txt", dialog_id=123, username=None, name=None, caption=None
+        )
+
+
+class TestTgForward:
+    """Tests for the tg_forward MCP tool."""
+
+    async def test_tg_forward_returns_ok(self, mock_client_wrapper) -> None:
+        """On success, tg_forward() returns {"ok": True}."""
+        client = _make_mock_client()
+        ctx = _make_ctx(client)
+        result = await tg_forward(
+            ctx, message_id=42, from_name="Alice", to_name="Bob"
+        )
+        assert result == {"ok": True}
+
+    async def test_tg_forward_passes_all_params(self, mock_client_wrapper) -> None:
+        """tg_forward() passes all params to client.forward_message()."""
+        client = _make_mock_client()
+        ctx = _make_ctx(client)
+        await tg_forward(
+            ctx, message_id=42,
+            from_dialog_id=1, to_dialog_id=2
+        )
+        client.forward_message.assert_called_once_with(
+            from_dialog_id=1, from_username=None, from_name=None,
+            to_dialog_id=2, to_username=None, to_name=None,
+            message_id=42,
+        )
+
+    async def test_tg_forward_no_source_raises(self, mock_client_wrapper) -> None:
+        """tg_forward() raises ValueError when no source selector is given."""
+        client = _make_mock_client()
+        ctx = _make_ctx(client)
+        with pytest.raises(ValueError, match="from_dialog_id, from_username, or from_name"):
+            await tg_forward(ctx, message_id=42, to_name="Bob")
+
+    async def test_tg_forward_no_dest_raises(self, mock_client_wrapper) -> None:
+        """tg_forward() raises ValueError when no destination selector is given."""
+        client = _make_mock_client()
+        ctx = _make_ctx(client)
+        with pytest.raises(ValueError, match="to_dialog_id, to_username, or to_name"):
+            await tg_forward(ctx, message_id=42, from_name="Alice")
+
+    async def test_tg_forward_error_returns_error_dict(self, mock_client_wrapper) -> None:
+        """When forward_message() raises ValueError, tg_forward returns {"error": ...}."""
+        client = _make_mock_client()
+        client.forward_message = AsyncMock(side_effect=ValueError("Dialog not found"))
+        ctx = _make_ctx(client)
+        result = await tg_forward(
+            ctx, message_id=42, from_name="Alice", to_name="Nobody"
+        )
+        assert "error" in result
 
 
 class TestTgRead:
@@ -380,7 +529,7 @@ class TestTgRead:
         client = _make_mock_client()
         ctx = _make_ctx(client)
         await tg_read(ctx, name="Alice")
-        client.mark_read.assert_called_once_with(name="Alice")
+        client.mark_read.assert_called_once_with(dialog_id=None, username=None, name="Alice")
 
     async def test_tg_read_parameter_is_named_name(self, mock_client_wrapper) -> None:
         """
@@ -409,3 +558,296 @@ class TestTgRead:
         assert isinstance(result, dict)
         assert "error" in result
         assert "Bob" in result["error"]
+
+
+# ---------------------------------------------------------------------------
+# Disambiguation tests — dialog_id / username / name selectors
+# These tests cover the feature added in Task 2.
+# ---------------------------------------------------------------------------
+
+
+class TestTgSendDisambiguation:
+    """Disambiguation tests for tg_send: dialog_id, username, name, priority."""
+
+    async def test_tg_send_with_dialog_id_only(self, mock_client_wrapper) -> None:
+        """
+        tg_send() called with only dialog_id passes dialog_id to send_message().
+
+        Expected: client.send_message() called with dialog_id=123, username=None, name=None.
+        """
+        client = _make_mock_client()
+        ctx = _make_ctx(client)
+        result = await tg_send(ctx, text="Hi", dialog_id=123)
+        assert result == {"ok": True}
+        client.send_message.assert_called_once_with(
+            text="Hi", dialog_id=123, username=None, name=None
+        )
+
+    async def test_tg_send_with_username_only_no_at(self, mock_client_wrapper) -> None:
+        """
+        tg_send() called with username (no leading @) passes it through.
+
+        Expected: client.send_message() called with username="alicesmith", name=None.
+        """
+        client = _make_mock_client()
+        ctx = _make_ctx(client)
+        result = await tg_send(ctx, text="Hi", username="alicesmith")
+        assert result == {"ok": True}
+        client.send_message.assert_called_once_with(
+            text="Hi", dialog_id=None, username="alicesmith", name=None
+        )
+
+    async def test_tg_send_with_username_only_with_at(self, mock_client_wrapper) -> None:
+        """
+        tg_send() called with username that has a leading @ passes it through
+        as-is to the client (stripping happens inside _resolve_entity).
+
+        Expected: client.send_message() called with username="@alicesmith".
+        """
+        client = _make_mock_client()
+        ctx = _make_ctx(client)
+        result = await tg_send(ctx, text="Hi", username="@alicesmith")
+        assert result == {"ok": True}
+        client.send_message.assert_called_once_with(
+            text="Hi", dialog_id=None, username="@alicesmith", name=None
+        )
+
+    async def test_tg_send_with_name_only(self, mock_client_wrapper) -> None:
+        """
+        REGRESSION: tg_send() still works with name only (backwards compatibility).
+
+        Expected: client.send_message() called with name="Alice".
+        """
+        client = _make_mock_client()
+        ctx = _make_ctx(client)
+        result = await tg_send(ctx, text="Hi", name="Alice")
+        assert result == {"ok": True}
+        client.send_message.assert_called_once_with(
+            text="Hi", dialog_id=None, username=None, name="Alice"
+        )
+
+    async def test_tg_send_no_selector_raises_value_error(self, mock_client_wrapper) -> None:
+        """
+        tg_send() called with no dialog selector raises ValueError immediately
+        (before calling client.send_message).
+
+        Expected: ValueError raised; client.send_message never called.
+        """
+        client = _make_mock_client()
+        ctx = _make_ctx(client)
+        with pytest.raises(ValueError, match="One of dialog_id, username, or name"):
+            await tg_send(ctx, text="Hi")
+        client.send_message.assert_not_called()
+
+    async def test_tg_send_dialog_id_takes_priority_over_username(
+        self, mock_client_wrapper
+    ) -> None:
+        """
+        When both dialog_id and username are supplied, dialog_id takes priority.
+        Both are forwarded to client.send_message() — priority resolution happens
+        inside _resolve_entity in the client layer.
+
+        Expected: client.send_message() called with dialog_id=99 AND username="alice".
+        """
+        client = _make_mock_client()
+        ctx = _make_ctx(client)
+        await tg_send(ctx, text="Hi", dialog_id=99, username="alice")
+        client.send_message.assert_called_once_with(
+            text="Hi", dialog_id=99, username="alice", name=None
+        )
+
+    async def test_tg_send_username_takes_priority_over_name(
+        self, mock_client_wrapper
+    ) -> None:
+        """
+        When both username and name are supplied, username takes priority.
+        Both are forwarded — priority resolution is in _resolve_entity.
+
+        Expected: client.send_message() called with username="alice" AND name="Alice".
+        """
+        client = _make_mock_client()
+        ctx = _make_ctx(client)
+        await tg_send(ctx, text="Hi", username="alice", name="Alice")
+        client.send_message.assert_called_once_with(
+            text="Hi", dialog_id=None, username="alice", name="Alice"
+        )
+
+
+class TestTgDialogDisambiguation:
+    """Disambiguation tests for tg_dialog: dialog_id, username, name, priority."""
+
+    async def test_tg_dialog_with_dialog_id_only(self, mock_client_wrapper) -> None:
+        """
+        tg_dialog() works when only dialog_id is given.
+
+        Expected: client.get_messages() called with dialog_id=456, others None.
+        """
+        client = _make_mock_client()
+        ctx = _make_ctx(client)
+        result = await tg_dialog(ctx, dialog_id=456)
+        assert isinstance(result, list)
+        client.get_messages.assert_called_once_with(
+            dialog_id=456, username=None, name=None, limit=20, offset=0
+        )
+
+    async def test_tg_dialog_with_username_no_at(self, mock_client_wrapper) -> None:
+        """
+        tg_dialog() works when username (without @) is given.
+        """
+        client = _make_mock_client()
+        ctx = _make_ctx(client)
+        await tg_dialog(ctx, username="bobsmith")
+        client.get_messages.assert_called_once_with(
+            dialog_id=None, username="bobsmith", name=None, limit=20, offset=0
+        )
+
+    async def test_tg_dialog_with_username_with_at(self, mock_client_wrapper) -> None:
+        """
+        tg_dialog() works when username has a leading @.
+        """
+        client = _make_mock_client()
+        ctx = _make_ctx(client)
+        await tg_dialog(ctx, username="@bobsmith")
+        client.get_messages.assert_called_once_with(
+            dialog_id=None, username="@bobsmith", name=None, limit=20, offset=0
+        )
+
+    async def test_tg_dialog_with_name_only_regression(self, mock_client_wrapper) -> None:
+        """
+        REGRESSION: tg_dialog() still works with name only.
+        """
+        client = _make_mock_client()
+        ctx = _make_ctx(client)
+        await tg_dialog(ctx, name="Alice")
+        client.get_messages.assert_called_once_with(
+            dialog_id=None, username=None, name="Alice", limit=20, offset=0
+        )
+
+    async def test_tg_dialog_no_selector_raises_value_error(
+        self, mock_client_wrapper
+    ) -> None:
+        """
+        tg_dialog() raises ValueError when called with no selector.
+        """
+        client = _make_mock_client()
+        ctx = _make_ctx(client)
+        with pytest.raises(ValueError, match="One of dialog_id, username, or name"):
+            await tg_dialog(ctx)
+        client.get_messages.assert_not_called()
+
+    async def test_tg_dialog_dialog_id_priority_over_username(
+        self, mock_client_wrapper
+    ) -> None:
+        """
+        When dialog_id and username are both given, both are forwarded to client
+        (priority is applied in _resolve_entity).
+        """
+        client = _make_mock_client()
+        ctx = _make_ctx(client)
+        await tg_dialog(ctx, dialog_id=7, username="carol")
+        client.get_messages.assert_called_once_with(
+            dialog_id=7, username="carol", name=None, limit=20, offset=0
+        )
+
+    async def test_tg_dialog_username_priority_over_name(
+        self, mock_client_wrapper
+    ) -> None:
+        """
+        When username and name are both given, both are forwarded to client.
+        """
+        client = _make_mock_client()
+        ctx = _make_ctx(client)
+        await tg_dialog(ctx, username="carol", name="Carol")
+        client.get_messages.assert_called_once_with(
+            dialog_id=None, username="carol", name="Carol", limit=20, offset=0
+        )
+
+
+class TestTgReadDisambiguation:
+    """Disambiguation tests for tg_read: dialog_id, username, name, priority."""
+
+    async def test_tg_read_with_dialog_id_only(self, mock_client_wrapper) -> None:
+        """
+        tg_read() works when only dialog_id is given.
+        """
+        client = _make_mock_client()
+        ctx = _make_ctx(client)
+        result = await tg_read(ctx, dialog_id=789)
+        assert result == {"ok": True}
+        client.mark_read.assert_called_once_with(
+            dialog_id=789, username=None, name=None
+        )
+
+    async def test_tg_read_with_username_no_at(self, mock_client_wrapper) -> None:
+        """
+        tg_read() works when username (without @) is given.
+        """
+        client = _make_mock_client()
+        ctx = _make_ctx(client)
+        result = await tg_read(ctx, username="dave")
+        assert result == {"ok": True}
+        client.mark_read.assert_called_once_with(
+            dialog_id=None, username="dave", name=None
+        )
+
+    async def test_tg_read_with_username_with_at(self, mock_client_wrapper) -> None:
+        """
+        tg_read() works when username has a leading @.
+        """
+        client = _make_mock_client()
+        ctx = _make_ctx(client)
+        result = await tg_read(ctx, username="@dave")
+        assert result == {"ok": True}
+        client.mark_read.assert_called_once_with(
+            dialog_id=None, username="@dave", name=None
+        )
+
+    async def test_tg_read_with_name_only_regression(self, mock_client_wrapper) -> None:
+        """
+        REGRESSION: tg_read() still works with name only.
+        """
+        client = _make_mock_client()
+        ctx = _make_ctx(client)
+        result = await tg_read(ctx, name="Alice")
+        assert result == {"ok": True}
+        client.mark_read.assert_called_once_with(
+            dialog_id=None, username=None, name="Alice"
+        )
+
+    async def test_tg_read_no_selector_raises_value_error(
+        self, mock_client_wrapper
+    ) -> None:
+        """
+        tg_read() raises ValueError when called with no selector.
+        """
+        client = _make_mock_client()
+        ctx = _make_ctx(client)
+        with pytest.raises(ValueError, match="One of dialog_id, username, or name"):
+            await tg_read(ctx)
+        client.mark_read.assert_not_called()
+
+    async def test_tg_read_dialog_id_priority_over_username(
+        self, mock_client_wrapper
+    ) -> None:
+        """
+        When dialog_id and username are both given, both are forwarded to client.
+        """
+        client = _make_mock_client()
+        ctx = _make_ctx(client)
+        await tg_read(ctx, dialog_id=5, username="eve")
+        client.mark_read.assert_called_once_with(
+            dialog_id=5, username="eve", name=None
+        )
+
+    async def test_tg_read_username_priority_over_name(
+        self, mock_client_wrapper
+    ) -> None:
+        """
+        When username and name are both given, both are forwarded to client.
+        """
+        client = _make_mock_client()
+        ctx = _make_ctx(client)
+        await tg_read(ctx, username="eve", name="Eve")
+        client.mark_read.assert_called_once_with(
+            dialog_id=None, username="eve", name="Eve"
+        )

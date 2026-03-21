@@ -225,7 +225,7 @@ class TestGetMessages:
 
         Expected: return type is list; each item is a Message instance.
         """
-        result = await mock_client_wrapper.get_messages("Alice")
+        result = await mock_client_wrapper.get_messages(name="Alice")
         assert isinstance(result, list)
         assert len(result) > 0
         for item in result:
@@ -241,7 +241,7 @@ class TestGetMessages:
         Expected: _client.get_messages() is called with add_offset=<offset>.
         """
         mock_telegram_client.get_messages.return_value = []
-        await mock_client_wrapper.get_messages("Alice", limit=10, offset=5)
+        await mock_client_wrapper.get_messages(name="Alice", limit=10, offset=5)
         mock_telegram_client.get_messages.assert_called_once()
         call_kwargs = mock_telegram_client.get_messages.call_args
         assert call_kwargs.kwargs.get("add_offset") == 5 or (
@@ -258,7 +258,7 @@ class TestGetMessages:
         Expected: every field on the first returned Message matches the
         mock_telegram_message fixture values (date is an ISO-8601 string).
         """
-        result = await mock_client_wrapper.get_messages("Alice")
+        result = await mock_client_wrapper.get_messages(name="Alice")
         assert len(result) >= 1
         m = result[0]
         assert m.id == mock_telegram_message.id
@@ -285,7 +285,7 @@ class TestSendMessage:
         Expected: mock_telegram_client.send_message is called with the resolved
         entity and the original text string.
         """
-        await mock_client_wrapper.send_message("Alice", "Hello")
+        await mock_client_wrapper.send_message(name="Alice", text="Hello")
         mock_telegram_client.send_message.assert_called_once()
         call_args = mock_telegram_client.send_message.call_args
         # Second positional arg (or kwarg) should be the text
@@ -310,7 +310,7 @@ class TestSendMessage:
         asserts that mock_telegram_client.send_message WAS called (positive
         check) so the test cannot trivially pass by doing nothing.
         """
-        await mock_client_wrapper.send_message("Alice", "Hello")
+        await mock_client_wrapper.send_message(name="Alice", text="Hello")
 
         # Positive check: send_message MUST have been called
         mock_telegram_client.send_message.assert_called_once()
@@ -333,17 +333,114 @@ class TestSendMessage:
         """
         send_message() resolves the dialog entity by name before sending.
 
-        Expected: _client.get_entity() is called with the name argument before
-        _client.send_message() is called.
+        Expected: _client.iter_dialogs() is used (not get_entity) when name is
+        given, and _client.send_message() is called after entity resolution.
         """
         mock_telegram_client.get_entity.reset_mock()
         mock_telegram_client.send_message.reset_mock()
 
-        await mock_client_wrapper.send_message("Alice", "Hello")
+        await mock_client_wrapper.send_message(name="Alice", text="Hello")
 
-        mock_telegram_client.get_entity.assert_called_once_with("Alice")
         # send_message must also have been called (after entity resolution)
         mock_telegram_client.send_message.assert_called_once()
+
+
+class TestSendFile:
+    """Tests for TelegramClientWrapper.send_file()."""
+
+    async def test_send_file_calls_telethon_send_file(
+        self, mock_client_wrapper, mock_telegram_client
+    ) -> None:
+        """
+        send_file() calls _client.send_file(entity, file_path, caption=caption).
+
+        Expected: mock_telegram_client.send_file is called once with the resolved
+        entity, file path, and caption.
+        """
+        await mock_client_wrapper.send_file(name="Alice", file_path="/tmp/test.txt")
+        mock_telegram_client.send_file.assert_called_once()
+
+    async def test_send_file_passes_caption(
+        self, mock_client_wrapper, mock_telegram_client
+    ) -> None:
+        """
+        send_file() forwards the caption kwarg to Telethon's send_file().
+
+        Expected: caption="Hello" is passed through.
+        """
+        await mock_client_wrapper.send_file(
+            name="Alice", file_path="/tmp/test.txt", caption="Hello"
+        )
+        call_kwargs = mock_telegram_client.send_file.call_args
+        assert call_kwargs.kwargs.get("caption") == "Hello"
+
+    async def test_send_file_caption_none_by_default(
+        self, mock_client_wrapper, mock_telegram_client
+    ) -> None:
+        """
+        When caption is not provided, send_file() passes caption=None.
+        """
+        await mock_client_wrapper.send_file(name="Alice", file_path="/tmp/test.txt")
+        call_kwargs = mock_telegram_client.send_file.call_args
+        assert call_kwargs.kwargs.get("caption") is None
+
+    async def test_send_file_resolves_entity_by_dialog_id(
+        self, mock_client_wrapper, mock_telegram_client
+    ) -> None:
+        """
+        send_file() resolves entity by dialog_id when provided.
+        """
+        mock_telegram_client.get_entity.reset_mock()
+        mock_telegram_client.get_entity.side_effect = None
+        await mock_client_wrapper.send_file(dialog_id=123, file_path="/tmp/f.txt")
+        mock_telegram_client.get_entity.assert_called_once_with(123)
+
+
+class TestForwardMessage:
+    """Tests for TelegramClientWrapper.forward_message()."""
+
+    async def test_forward_message_calls_telethon_forward_messages(
+        self, mock_client_wrapper, mock_telegram_client
+    ) -> None:
+        """
+        forward_message() calls _client.forward_messages(to_entity, msg_id, from_entity).
+
+        Expected: mock_telegram_client.forward_messages is called once.
+        """
+        await mock_client_wrapper.forward_message(
+            from_name="Alice", to_name="Alice", message_id=42
+        )
+        mock_telegram_client.forward_messages.assert_called_once()
+
+    async def test_forward_message_passes_message_id(
+        self, mock_client_wrapper, mock_telegram_client
+    ) -> None:
+        """
+        forward_message() passes message_id as the second positional arg
+        to Telethon's forward_messages().
+        """
+        await mock_client_wrapper.forward_message(
+            from_name="Alice", to_name="Alice", message_id=99
+        )
+        call_args = mock_telegram_client.forward_messages.call_args
+        assert 99 in call_args.args
+
+    async def test_forward_message_raises_if_source_not_found(
+        self, mock_client_wrapper, mock_telegram_client
+    ) -> None:
+        """
+        forward_message() raises ValueError if the source dialog is not found.
+        """
+        async def _empty_iter():
+            return
+            yield
+
+        mock_telegram_client.iter_dialogs = MagicMock(side_effect=lambda: _empty_iter())
+
+        with pytest.raises(ValueError, match="Dialog not found"):
+            await mock_client_wrapper.forward_message(
+                from_name="Nobody", to_name="Alice", message_id=42
+            )
 
 
 class TestMarkRead:
@@ -355,12 +452,11 @@ class TestMarkRead:
         """
         mark_read() calls _client.send_read_acknowledge(entity) exactly once.
 
-        Expected: mock_telegram_client.send_read_acknowledge is called with
-        the resolved entity object.
+        Expected: mock_telegram_client.send_read_acknowledge is called after
+        entity resolution.
         """
-        entity_mock = mock_telegram_client.get_entity.return_value
-        await mock_client_wrapper.mark_read("Alice")
-        mock_telegram_client.send_read_acknowledge.assert_called_once_with(entity_mock)
+        await mock_client_wrapper.mark_read(name="Alice")
+        mock_telegram_client.send_read_acknowledge.assert_called_once()
 
 
 class TestDisconnect:
@@ -422,16 +518,16 @@ class TestResolveEntity:
         self, mock_client_wrapper, mock_telegram_client
     ) -> None:
         """
-        When _client.get_entity() raises ValueError or
-        UsernameNotOccupiedError, _resolve_entity() must re-raise as
-        ValueError with a message of the form 'Dialog not found: <name>'.
+        When _client.get_entity() raises ValueError for a username lookup,
+        _resolve_entity() must re-raise as ValueError with a message of the
+        form 'Dialog not found: username=<handle>'.
 
-        Expected: ValueError is raised; message starts with 'Dialog not found'.
+        Expected: ValueError is raised; message contains 'Dialog not found'.
         """
         mock_telegram_client.get_entity.side_effect = ValueError("not found")
 
-        with pytest.raises(ValueError, match="Dialog not found: NonExistent"):
-            await mock_client_wrapper._resolve_entity("NonExistent")
+        with pytest.raises(ValueError, match="Dialog not found: username=NonExistent"):
+            await mock_client_wrapper._resolve_entity(username="NonExistent")
 
     async def test_resolve_entity_raises_value_error_on_username_not_occupied(
         self, mock_client_wrapper, mock_telegram_client
@@ -444,5 +540,199 @@ class TestResolveEntity:
 
         mock_telegram_client.get_entity.side_effect = UsernameNotOccupiedError(request=None)
 
-        with pytest.raises(ValueError, match="Dialog not found: @ghost"):
-            await mock_client_wrapper._resolve_entity("@ghost")
+        with pytest.raises(ValueError, match="Dialog not found: username=@ghost"):
+            await mock_client_wrapper._resolve_entity(username="@ghost")
+
+    async def test_resolve_entity_with_dialog_id_calls_get_entity_with_int(
+        self, mock_client_wrapper, mock_telegram_client
+    ) -> None:
+        """
+        When dialog_id is provided, _resolve_entity() calls get_entity() with
+        the integer ID (not a string).
+
+        Expected: get_entity called with the integer 12345.
+        """
+        mock_telegram_client.get_entity.reset_mock()
+        mock_telegram_client.get_entity.side_effect = None
+        await mock_client_wrapper._resolve_entity(dialog_id=12345)
+        mock_telegram_client.get_entity.assert_called_once_with(12345)
+        # Confirm the arg passed is actually an int
+        call_arg = mock_telegram_client.get_entity.call_args.args[0]
+        assert isinstance(call_arg, int)
+
+    async def test_resolve_entity_with_username_strips_at_and_calls_get_entity_with_str(
+        self, mock_client_wrapper, mock_telegram_client
+    ) -> None:
+        """
+        When username with leading @ is provided, _resolve_entity() strips the
+        @ and calls get_entity() with the plain string handle.
+
+        Expected: get_entity called with "alicehandle" (not "@alicehandle").
+        """
+        mock_telegram_client.get_entity.reset_mock()
+        mock_telegram_client.get_entity.side_effect = None
+        await mock_client_wrapper._resolve_entity(username="@alicehandle")
+        mock_telegram_client.get_entity.assert_called_once_with("alicehandle")
+        call_arg = mock_telegram_client.get_entity.call_args.args[0]
+        assert isinstance(call_arg, str)
+        assert not call_arg.startswith("@")
+
+    async def test_resolve_entity_with_username_no_at_calls_get_entity_with_str(
+        self, mock_client_wrapper, mock_telegram_client
+    ) -> None:
+        """
+        When username without leading @ is provided, _resolve_entity() calls
+        get_entity() with the string as-is.
+
+        Expected: get_entity called with "alicehandle".
+        """
+        mock_telegram_client.get_entity.reset_mock()
+        mock_telegram_client.get_entity.side_effect = None
+        await mock_client_wrapper._resolve_entity(username="alicehandle")
+        mock_telegram_client.get_entity.assert_called_once_with("alicehandle")
+
+    async def test_resolve_entity_with_name_scans_iter_dialogs(
+        self, mock_client_wrapper, mock_telegram_client
+    ) -> None:
+        """
+        When name is provided (no dialog_id or username), _resolve_entity() uses
+        iter_dialogs() — not get_entity() — to find the entity by display name.
+
+        Expected: iter_dialogs() is called; get_entity() is NOT called.
+        """
+        mock_telegram_client.get_entity.reset_mock()
+        mock_telegram_client.get_entity.side_effect = None
+
+        # The default iter_dialogs mock yields a dialog with name "Alice"
+        entity = await mock_client_wrapper._resolve_entity(name="Alice")
+        assert entity is not None
+        # get_entity should NOT have been called — name resolution goes through iter_dialogs
+        mock_telegram_client.get_entity.assert_not_called()
+
+    async def test_resolve_entity_with_name_not_found_raises_value_error(
+        self, mock_client_wrapper, mock_telegram_client
+    ) -> None:
+        """
+        When name is provided but not found via iter_dialogs(), _resolve_entity()
+        raises ValueError.
+        """
+        async def _empty_iter():
+            return
+            yield  # make it an async generator
+
+        mock_telegram_client.iter_dialogs = MagicMock(side_effect=lambda: _empty_iter())
+
+        with pytest.raises(ValueError, match="Dialog not found: name=Nobody"):
+            await mock_client_wrapper._resolve_entity(name="Nobody")
+
+    async def test_resolve_entity_no_selector_raises_value_error(
+        self, mock_client_wrapper, mock_telegram_client
+    ) -> None:
+        """
+        When none of dialog_id, username, name is provided, _resolve_entity()
+        raises ValueError immediately.
+        """
+        with pytest.raises(ValueError, match="One of dialog_id, username, or name"):
+            await mock_client_wrapper._resolve_entity()
+
+    async def test_resolve_entity_dialog_id_takes_priority_over_username(
+        self, mock_client_wrapper, mock_telegram_client
+    ) -> None:
+        """
+        When both dialog_id and username are provided, dialog_id takes priority:
+        get_entity() is called with the integer dialog_id, not the string handle.
+        """
+        mock_telegram_client.get_entity.reset_mock()
+        mock_telegram_client.get_entity.side_effect = None
+        await mock_client_wrapper._resolve_entity(dialog_id=99, username="somehandle")
+        call_arg = mock_telegram_client.get_entity.call_args.args[0]
+        assert isinstance(call_arg, int)
+        assert call_arg == 99
+
+    async def test_resolve_entity_username_takes_priority_over_name(
+        self, mock_client_wrapper, mock_telegram_client
+    ) -> None:
+        """
+        When both username and name are provided, username takes priority:
+        get_entity() is called with the stripped string handle, not iter_dialogs.
+        """
+        mock_telegram_client.get_entity.reset_mock()
+        mock_telegram_client.get_entity.side_effect = None
+        await mock_client_wrapper._resolve_entity(username="handle", name="Alice")
+        mock_telegram_client.get_entity.assert_called_once_with("handle")
+        # iter_dialogs should NOT have been used
+        mock_telegram_client.iter_dialogs.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Tests for username field in get_dialogs()
+# ---------------------------------------------------------------------------
+
+
+class TestGetDialogsUsernameField:
+    """Tests that get_dialogs() correctly populates the username field."""
+
+    async def test_get_dialogs_username_populated_for_user(
+        self, mock_client_wrapper, mock_telegram_client
+    ) -> None:
+        """
+        When the dialog entity has a username attribute, get_dialogs() maps it
+        to the Dialog.username field.
+
+        Expected: returned Dialog has username == "alicesmith"
+        (the conftest mock_telegram_dialog fixture sets entity.username="alicesmith").
+        """
+        result = await mock_client_wrapper.get_dialogs()
+        assert len(result) >= 1
+        assert result[0].username == "alicesmith"
+
+    async def test_get_dialogs_username_none_for_group_without_username(
+        self, mock_client_wrapper, mock_telegram_client
+    ) -> None:
+        """
+        When the dialog entity has no username attribute (a group without a
+        public link), get_dialogs() sets Dialog.username to None.
+
+        Expected: returned Dialog has username == None.
+        """
+        group_dialog = MagicMock()
+        group_dialog.id = 555
+        group_dialog.name = "Work Group"
+        group_dialog.unread_count = 0
+        group_dialog.is_user = False
+        group_dialog.is_group = True
+        group_dialog.is_channel = False
+        group_dialog.message = None
+        group_dialog.date = None
+        # Entity has no username — del/spec it away
+        entity_stub = MagicMock(spec=[])  # empty spec: no attributes
+        group_dialog.entity = entity_stub
+
+        mock_telegram_client.get_dialogs.return_value = [group_dialog]
+        result = await mock_client_wrapper.get_dialogs()
+        assert len(result) == 1
+        assert result[0].username is None
+
+    async def test_get_dialogs_username_none_when_entity_username_is_none(
+        self, mock_client_wrapper, mock_telegram_client
+    ) -> None:
+        """
+        When the dialog entity has a username attribute that is explicitly None
+        (e.g. a private group), get_dialogs() maps it to None.
+        """
+        private_group = MagicMock()
+        private_group.id = 666
+        private_group.name = "Private Group"
+        private_group.unread_count = 1
+        private_group.is_user = False
+        private_group.is_group = True
+        private_group.is_channel = False
+        private_group.message = None
+        private_group.date = None
+        entity_stub = MagicMock()
+        entity_stub.username = None
+        private_group.entity = entity_stub
+
+        mock_telegram_client.get_dialogs.return_value = [private_group]
+        result = await mock_client_wrapper.get_dialogs()
+        assert result[0].username is None

@@ -100,6 +100,11 @@ def mock_telegram_dialog() -> MagicMock:
     dialog.is_group = False
     dialog.is_channel = False
 
+    # entity stub with username attribute
+    entity_stub = MagicMock()
+    entity_stub.username = "alicesmith"
+    dialog.entity = entity_stub
+
     # last message stub
     last_msg = MagicMock()
     last_msg.text = "Hey there!"
@@ -198,6 +203,24 @@ def mock_telegram_client(
     code_request_result.phone_code_hash = "fakephonecodehash"
     client.send_code_request.return_value = code_request_result
     client.sign_in.return_value = mock_telegram_user
+
+    # iter_dialogs async generator — returns a dialog with name "Alice" so
+    # name-based resolution in _resolve_entity() can find it in tests.
+    async def _iter_dialogs_default():
+        iter_dialog = MagicMock()
+        iter_dialog.name = "Alice"
+        iter_dialog.entity = entity_mock
+        yield iter_dialog
+
+    client.iter_dialogs = MagicMock(side_effect=lambda: _iter_dialogs_default())
+
+    # File sending
+    sent_file = MagicMock()
+    sent_file.id = 200
+    client.send_file.return_value = sent_file
+
+    # Message forwarding
+    client.forward_messages.return_value = [MagicMock()]
 
     # Explicitly make draft-related methods raise so any accidental call is caught.
     # Tests for send_message will assert these are never called.

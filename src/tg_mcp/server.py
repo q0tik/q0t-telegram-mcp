@@ -4,9 +4,11 @@ import dataclasses
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from typing import Annotated
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp import Context
+from pydantic import Field
 
 from .client import TelegramClientWrapper
 from .config import Config
@@ -39,6 +41,21 @@ async def lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
 mcp = FastMCP("q0t-telegram-mcp", lifespan=lifespan)
 
 
+# ---------------------------------------------------------------------------
+# Type aliases for recurring parameter patterns
+# ---------------------------------------------------------------------------
+
+DialogId = Annotated[int | None, Field(
+    description="Numeric ID from tg_dialogs. Most reliable, no ambiguity.",
+)]
+Username = Annotated[str | None, Field(
+    description="Telegram @handle, e.g. 'adilet_c' (leading @ optional).",
+)]
+DisplayName = Annotated[str | None, Field(
+    description="Display name. Use only when dialog_id/username are unavailable; may be ambiguous.",
+)]
+
+
 @mcp.tool()
 async def tg_me(ctx: Context) -> dict:
     """Get current Telegram account info."""
@@ -53,9 +70,9 @@ async def tg_me(ctx: Context) -> dict:
 @mcp.tool()
 async def tg_dialogs(
     ctx: Context,
-    unread_only: bool = False,
-    limit: int = 20,
-    offset: int = 0,
+    unread_only: Annotated[bool, Field(description="When true, only return dialogs with unread messages.")] = False,
+    limit: Annotated[int, Field(description="Maximum number of dialogs to return.", ge=1)] = 20,
+    offset: Annotated[int, Field(description="Number of dialogs to skip (pagination).", ge=0)] = 0,
 ) -> list[dict]:
     """List Telegram dialogs (chats, groups, channels)."""
     client: TelegramClientWrapper = ctx.request_context.lifespan_context.client
@@ -69,36 +86,115 @@ async def tg_dialogs(
 @mcp.tool()
 async def tg_dialog(
     ctx: Context,
-    name: str,
-    limit: int = 20,
-    offset: int = 0,
+    dialog_id: DialogId = None,
+    username: Username = None,
+    name: DisplayName = None,
+    limit: Annotated[int, Field(description="Maximum number of messages to return.", ge=1)] = 20,
+    offset: Annotated[int, Field(description="Number of messages to skip (pagination).", ge=0)] = 0,
 ) -> list[dict]:
-    """Get messages from a Telegram dialog."""
+    """Get messages from a Telegram dialog. Supply exactly one of dialog_id, username, or name. Priority: dialog_id > username > name."""
+    if dialog_id is None and username is None and name is None:
+        raise ValueError("One of dialog_id, username, or name must be provided")
     client: TelegramClientWrapper = ctx.request_context.lifespan_context.client
     try:
-        messages = await client.get_messages(name=name, limit=limit, offset=offset)
+        messages = await client.get_messages(
+            dialog_id=dialog_id, username=username, name=name, limit=limit, offset=offset
+        )
         return [dataclasses.asdict(m) for m in messages]
     except ValueError as e:
         return [{"error": str(e)}]
 
 
 @mcp.tool()
-async def tg_send(ctx: Context, name: str, text: str) -> dict:
-    """Send a message to a Telegram dialog."""
+async def tg_send(
+    ctx: Context,
+    text: Annotated[str, Field(description="Message body to send.")],
+    dialog_id: DialogId = None,
+    username: Username = None,
+    name: DisplayName = None,
+) -> dict:
+    """Send a message to a Telegram dialog. Supply exactly one of dialog_id, username, or name. Priority: dialog_id > username > name."""
+    if dialog_id is None and username is None and name is None:
+        raise ValueError("One of dialog_id, username, or name must be provided")
     client: TelegramClientWrapper = ctx.request_context.lifespan_context.client
     try:
-        await client.send_message(name=name, text=text)
+        await client.send_message(text=text, dialog_id=dialog_id, username=username, name=name)
         return {"ok": True}
     except ValueError as e:
         return {"error": str(e)}
 
 
 @mcp.tool()
-async def tg_read(ctx: Context, name: str) -> dict:
-    """Mark all messages in a dialog as read."""
+async def tg_send_file(
+    ctx: Context,
+    file_path: Annotated[str, Field(description="Local filesystem path to the file to send.")],
+    dialog_id: DialogId = None,
+    username: Username = None,
+    name: DisplayName = None,
+    caption: Annotated[str | None, Field(description="Optional text caption to attach to the file.")] = None,
+) -> dict:
+    """Send a file to a Telegram dialog. Supply exactly one of dialog_id, username, or name. Priority: dialog_id > username > name."""
+    if dialog_id is None and username is None and name is None:
+        raise ValueError("One of dialog_id, username, or name must be provided")
     client: TelegramClientWrapper = ctx.request_context.lifespan_context.client
     try:
-        await client.mark_read(name=name)
+        await client.send_file(
+            file_path=file_path,
+            dialog_id=dialog_id,
+            username=username,
+            name=name,
+            caption=caption,
+        )
+        return {"ok": True}
+    except ValueError as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+async def tg_forward(
+    ctx: Context,
+    message_id: Annotated[int, Field(description="ID of the message to forward (from tg_dialog results).")],
+    from_dialog_id: Annotated[int | None, Field(description="Source dialog numeric ID.")] = None,
+    from_username: Annotated[str | None, Field(description="Source dialog @handle.")] = None,
+    from_name: Annotated[str | None, Field(description="Source dialog display name.")] = None,
+    to_dialog_id: Annotated[int | None, Field(description="Destination dialog numeric ID.")] = None,
+    to_username: Annotated[str | None, Field(description="Destination dialog @handle.")] = None,
+    to_name: Annotated[str | None, Field(description="Destination dialog display name.")] = None,
+) -> dict:
+    """Forward a message from one dialog to another. Supply exactly one source selector (from_*) and one destination selector (to_*)."""
+    if from_dialog_id is None and from_username is None and from_name is None:
+        raise ValueError("One of from_dialog_id, from_username, or from_name must be provided")
+    if to_dialog_id is None and to_username is None and to_name is None:
+        raise ValueError("One of to_dialog_id, to_username, or to_name must be provided")
+    client: TelegramClientWrapper = ctx.request_context.lifespan_context.client
+    try:
+        await client.forward_message(
+            from_dialog_id=from_dialog_id,
+            from_username=from_username,
+            from_name=from_name,
+            to_dialog_id=to_dialog_id,
+            to_username=to_username,
+            to_name=to_name,
+            message_id=message_id,
+        )
+        return {"ok": True}
+    except ValueError as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+async def tg_read(
+    ctx: Context,
+    dialog_id: DialogId = None,
+    username: Username = None,
+    name: DisplayName = None,
+) -> dict:
+    """Mark all messages in a dialog as read. Supply exactly one of dialog_id, username, or name. Priority: dialog_id > username > name."""
+    if dialog_id is None and username is None and name is None:
+        raise ValueError("One of dialog_id, username, or name must be provided")
+    client: TelegramClientWrapper = ctx.request_context.lifespan_context.client
+    try:
+        await client.mark_read(dialog_id=dialog_id, username=username, name=name)
         return {"ok": True}
     except ValueError as e:
         return {"error": str(e)}

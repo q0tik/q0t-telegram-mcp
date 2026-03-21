@@ -26,6 +26,7 @@ class Dialog:
 
     id: int           # Marked entity ID — stable and unique across dialog types
     name: str         # Display name (first+last for users, title for groups/channels)
+    username: str | None  # @handle without leading @, None for groups/channels without one
     unread_count: int
     is_user: bool
     is_group: bool
