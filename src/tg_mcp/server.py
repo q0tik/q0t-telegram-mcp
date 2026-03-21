@@ -39,21 +39,6 @@ async def lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
 mcp = FastMCP("q0t-telegram-mcp", lifespan=lifespan)
 
 
-# ---------------------------------------------------------------------------
-# Type aliases for recurring parameter patterns
-# ---------------------------------------------------------------------------
-
-DialogId = Annotated[Optional[int], Field(
-    description="Numeric ID from tg_dialogs. Most reliable, no ambiguity.",
-)]
-Username = Annotated[Optional[str], Field(
-    description="Telegram @handle, e.g. 'adilet_c' (leading @ optional).",
-)]
-DisplayName = Annotated[Optional[str], Field(
-    description="Display name. Use only when dialog_id/username are unavailable; may be ambiguous.",
-)]
-
-
 @mcp.tool()
 async def tg_me(ctx: Context) -> dict:
     """Get current Telegram account info."""
@@ -84,9 +69,9 @@ async def tg_dialogs(
 @mcp.tool()
 async def tg_dialog(
     ctx: Context,
-    dialog_id: DialogId = None,
-    username: Username = None,
-    name: DisplayName = None,
+    dialog_id: Annotated[Optional[int], Field(description="Numeric ID from tg_dialogs. Most reliable, no ambiguity.")] = None,
+    username: Annotated[Optional[str], Field(description="Telegram @handle, e.g. 'adilet_c' (leading @ optional).")] = None,
+    name: Annotated[Optional[str], Field(description="Display name. Use only when dialog_id/username are unavailable; may be ambiguous.")] = None,
     limit: Annotated[int, Field(description="Maximum number of messages to return.", ge=1)] = 20,
     offset: Annotated[int, Field(description="Number of messages to skip (pagination).", ge=0)] = 0,
 ) -> list[dict]:
@@ -107,9 +92,9 @@ async def tg_dialog(
 async def tg_send(
     ctx: Context,
     text: Annotated[str, Field(description="Message body to send.")],
-    dialog_id: DialogId = None,
-    username: Username = None,
-    name: DisplayName = None,
+    dialog_id: Annotated[Optional[int], Field(description="Numeric ID from tg_dialogs. Most reliable, no ambiguity.")] = None,
+    username: Annotated[Optional[str], Field(description="Telegram @handle, e.g. 'adilet_c' (leading @ optional).")] = None,
+    name: Annotated[Optional[str], Field(description="Display name. Use only when dialog_id/username are unavailable; may be ambiguous.")] = None,
 ) -> dict:
     """Send a message to a Telegram dialog. Supply exactly one of dialog_id, username, or name. Priority: dialog_id > username > name."""
     if dialog_id is None and username is None and name is None:
@@ -126,9 +111,9 @@ async def tg_send(
 async def tg_send_file(
     ctx: Context,
     file_path: Annotated[str, Field(description="Local filesystem path to the file to send.")],
-    dialog_id: DialogId = None,
-    username: Username = None,
-    name: DisplayName = None,
+    dialog_id: Annotated[Optional[int], Field(description="Numeric ID from tg_dialogs. Most reliable, no ambiguity.")] = None,
+    username: Annotated[Optional[str], Field(description="Telegram @handle, e.g. 'adilet_c' (leading @ optional).")] = None,
+    name: Annotated[Optional[str], Field(description="Display name. Use only when dialog_id/username are unavailable; may be ambiguous.")] = None,
     caption: Annotated[Optional[str], Field(description="Optional text caption to attach to the file.")] = None,
 ) -> dict:
     """Send a file to a Telegram dialog. Supply exactly one of dialog_id, username, or name. Priority: dialog_id > username > name."""
@@ -183,9 +168,9 @@ async def tg_forward(
 @mcp.tool()
 async def tg_read(
     ctx: Context,
-    dialog_id: DialogId = None,
-    username: Username = None,
-    name: DisplayName = None,
+    dialog_id: Annotated[Optional[int], Field(description="Numeric ID from tg_dialogs. Most reliable, no ambiguity.")] = None,
+    username: Annotated[Optional[str], Field(description="Telegram @handle, e.g. 'adilet_c' (leading @ optional).")] = None,
+    name: Annotated[Optional[str], Field(description="Display name. Use only when dialog_id/username are unavailable; may be ambiguous.")] = None,
 ) -> dict:
     """Mark all messages in a dialog as read. Supply exactly one of dialog_id, username, or name. Priority: dialog_id > username > name."""
     if dialog_id is None and username is None and name is None:
