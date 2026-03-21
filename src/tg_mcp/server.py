@@ -6,7 +6,7 @@ from typing import Annotated, Optional
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp import Context
-from pydantic import Field
+from pydantic import Field, WithJsonSchema
 
 from .client import TelegramClientWrapper
 from .config import Config
@@ -39,6 +39,7 @@ async def lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
 mcp = FastMCP("q0t-telegram-mcp", lifespan=lifespan)
 
 
+
 @mcp.tool()
 async def tg_me(ctx: Context) -> dict:
     """Get current Telegram account info."""
@@ -69,9 +70,9 @@ async def tg_dialogs(
 @mcp.tool()
 async def tg_dialog(
     ctx: Context,
-    dialog_id: Annotated[Optional[int], Field(description="Numeric ID from tg_dialogs. Most reliable, no ambiguity.")] = None,
-    username: Annotated[Optional[str], Field(description="Telegram @handle, e.g. 'adilet_c' (leading @ optional).")] = None,
-    name: Annotated[Optional[str], Field(description="Display name. Use only when dialog_id/username are unavailable; may be ambiguous.")] = None,
+    dialog_id: Annotated[Optional[int], Field(description="Numeric ID from tg_dialogs. Most reliable, no ambiguity."), WithJsonSchema({"type": "integer", "description": "Numeric ID from tg_dialogs. Most reliable, no ambiguity."})] = None,
+    username: Annotated[Optional[str], Field(description="Telegram @handle, e.g. 'adilet_c' (leading @ optional)."), WithJsonSchema({"type": "string", "description": "Telegram @handle, e.g. 'adilet_c' (leading @ optional)."})] = None,
+    name: Annotated[Optional[str], Field(description="Display name. Use only when dialog_id/username are unavailable; may be ambiguous."), WithJsonSchema({"type": "string", "description": "Display name. Use only when dialog_id/username are unavailable; may be ambiguous."})] = None,
     limit: Annotated[int, Field(description="Maximum number of messages to return.", ge=1)] = 20,
     offset: Annotated[int, Field(description="Number of messages to skip (pagination).", ge=0)] = 0,
 ) -> list[dict]:
@@ -92,9 +93,9 @@ async def tg_dialog(
 async def tg_send(
     ctx: Context,
     text: Annotated[str, Field(description="Message body to send.")],
-    dialog_id: Annotated[Optional[int], Field(description="Numeric ID from tg_dialogs. Most reliable, no ambiguity.")] = None,
-    username: Annotated[Optional[str], Field(description="Telegram @handle, e.g. 'adilet_c' (leading @ optional).")] = None,
-    name: Annotated[Optional[str], Field(description="Display name. Use only when dialog_id/username are unavailable; may be ambiguous.")] = None,
+    dialog_id: Annotated[Optional[int], Field(description="Numeric ID from tg_dialogs. Most reliable, no ambiguity."), WithJsonSchema({"type": "integer", "description": "Numeric ID from tg_dialogs. Most reliable, no ambiguity."})] = None,
+    username: Annotated[Optional[str], Field(description="Telegram @handle, e.g. 'adilet_c' (leading @ optional)."), WithJsonSchema({"type": "string", "description": "Telegram @handle, e.g. 'adilet_c' (leading @ optional)."})] = None,
+    name: Annotated[Optional[str], Field(description="Display name. Use only when dialog_id/username are unavailable; may be ambiguous."), WithJsonSchema({"type": "string", "description": "Display name. Use only when dialog_id/username are unavailable; may be ambiguous."})] = None,
 ) -> dict:
     """Send a message to a Telegram dialog. Supply exactly one of dialog_id, username, or name. Priority: dialog_id > username > name."""
     if dialog_id is None and username is None and name is None:
@@ -111,10 +112,10 @@ async def tg_send(
 async def tg_send_file(
     ctx: Context,
     file_path: Annotated[str, Field(description="Local filesystem path to the file to send.")],
-    dialog_id: Annotated[Optional[int], Field(description="Numeric ID from tg_dialogs. Most reliable, no ambiguity.")] = None,
-    username: Annotated[Optional[str], Field(description="Telegram @handle, e.g. 'adilet_c' (leading @ optional).")] = None,
-    name: Annotated[Optional[str], Field(description="Display name. Use only when dialog_id/username are unavailable; may be ambiguous.")] = None,
-    caption: Annotated[Optional[str], Field(description="Optional text caption to attach to the file.")] = None,
+    dialog_id: Annotated[Optional[int], Field(description="Numeric ID from tg_dialogs. Most reliable, no ambiguity."), WithJsonSchema({"type": "integer", "description": "Numeric ID from tg_dialogs. Most reliable, no ambiguity."})] = None,
+    username: Annotated[Optional[str], Field(description="Telegram @handle, e.g. 'adilet_c' (leading @ optional)."), WithJsonSchema({"type": "string", "description": "Telegram @handle, e.g. 'adilet_c' (leading @ optional)."})] = None,
+    name: Annotated[Optional[str], Field(description="Display name. Use only when dialog_id/username are unavailable; may be ambiguous."), WithJsonSchema({"type": "string", "description": "Display name. Use only when dialog_id/username are unavailable; may be ambiguous."})] = None,
+    caption: Annotated[Optional[str], Field(description="Optional text caption to attach to the file."), WithJsonSchema({"type": "string", "description": "Optional text caption to attach to the file."})] = None,
 ) -> dict:
     """Send a file to a Telegram dialog. Supply exactly one of dialog_id, username, or name. Priority: dialog_id > username > name."""
     if dialog_id is None and username is None and name is None:
@@ -137,12 +138,12 @@ async def tg_send_file(
 async def tg_forward(
     ctx: Context,
     message_id: Annotated[int, Field(description="ID of the message to forward (from tg_dialog results).")],
-    from_dialog_id: Annotated[Optional[int], Field(description="Source dialog numeric ID.")] = None,
-    from_username: Annotated[Optional[str], Field(description="Source dialog @handle.")] = None,
-    from_name: Annotated[Optional[str], Field(description="Source dialog display name.")] = None,
-    to_dialog_id: Annotated[Optional[int], Field(description="Destination dialog numeric ID.")] = None,
-    to_username: Annotated[Optional[str], Field(description="Destination dialog @handle.")] = None,
-    to_name: Annotated[Optional[str], Field(description="Destination dialog display name.")] = None,
+    from_dialog_id: Annotated[Optional[int], Field(description="Source dialog numeric ID."), WithJsonSchema({"type": "integer", "description": "Source dialog numeric ID."})] = None,
+    from_username: Annotated[Optional[str], Field(description="Source dialog @handle."), WithJsonSchema({"type": "string", "description": "Source dialog @handle."})] = None,
+    from_name: Annotated[Optional[str], Field(description="Source dialog display name."), WithJsonSchema({"type": "string", "description": "Source dialog display name."})] = None,
+    to_dialog_id: Annotated[Optional[int], Field(description="Destination dialog numeric ID."), WithJsonSchema({"type": "integer", "description": "Destination dialog numeric ID."})] = None,
+    to_username: Annotated[Optional[str], Field(description="Destination dialog @handle."), WithJsonSchema({"type": "string", "description": "Destination dialog @handle."})] = None,
+    to_name: Annotated[Optional[str], Field(description="Destination dialog display name."), WithJsonSchema({"type": "string", "description": "Destination dialog display name."})] = None,
 ) -> dict:
     """Forward a message from one dialog to another. Supply exactly one source selector (from_*) and one destination selector (to_*)."""
     if from_dialog_id is None and from_username is None and from_name is None:
@@ -168,9 +169,9 @@ async def tg_forward(
 @mcp.tool()
 async def tg_read(
     ctx: Context,
-    dialog_id: Annotated[Optional[int], Field(description="Numeric ID from tg_dialogs. Most reliable, no ambiguity.")] = None,
-    username: Annotated[Optional[str], Field(description="Telegram @handle, e.g. 'adilet_c' (leading @ optional).")] = None,
-    name: Annotated[Optional[str], Field(description="Display name. Use only when dialog_id/username are unavailable; may be ambiguous.")] = None,
+    dialog_id: Annotated[Optional[int], Field(description="Numeric ID from tg_dialogs. Most reliable, no ambiguity."), WithJsonSchema({"type": "integer", "description": "Numeric ID from tg_dialogs. Most reliable, no ambiguity."})] = None,
+    username: Annotated[Optional[str], Field(description="Telegram @handle, e.g. 'adilet_c' (leading @ optional)."), WithJsonSchema({"type": "string", "description": "Telegram @handle, e.g. 'adilet_c' (leading @ optional)."})] = None,
+    name: Annotated[Optional[str], Field(description="Display name. Use only when dialog_id/username are unavailable; may be ambiguous."), WithJsonSchema({"type": "string", "description": "Display name. Use only when dialog_id/username are unavailable; may be ambiguous."})] = None,
 ) -> dict:
     """Mark all messages in a dialog as read. Supply exactly one of dialog_id, username, or name. Priority: dialog_id > username > name."""
     if dialog_id is None and username is None and name is None:
