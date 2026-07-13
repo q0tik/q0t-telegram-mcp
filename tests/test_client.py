@@ -736,3 +736,45 @@ class TestGetDialogsUsernameField:
         mock_telegram_client.get_dialogs.return_value = [private_group]
         result = await mock_client_wrapper.get_dialogs()
         assert result[0].username is None
+
+
+# ---------------------------------------------------------------------------
+# Tests for helpers: _extract_buttons and _describe_media
+# ---------------------------------------------------------------------------
+
+
+from types import SimpleNamespace
+from tg_mcp.client import _extract_buttons, _describe_media
+from tg_mcp.models import Button
+
+
+def _fake_button(text, url=None, data=None):
+    return SimpleNamespace(text=text, url=url, data=data)
+
+
+def test_extract_buttons_none_when_no_markup():
+    msg = SimpleNamespace(buttons=None)
+    assert _extract_buttons(msg) is None
+
+
+def test_extract_buttons_classifies_kinds():
+    msg = SimpleNamespace(buttons=[[_fake_button("Go", data=b"x"), _fake_button("Site", url="https://s")]])
+    rows = _extract_buttons(msg)
+    assert rows == [[Button("Go", "callback", None), Button("Site", "url", "https://s")]]
+
+
+def test_describe_media_photo_and_document_and_none():
+    photo = SimpleNamespace(photo=True, voice=None, video_note=None, video=None,
+                            audio=None, gif=None, sticker=None, document=None,
+                            poll=None, contact=None, geo=None, web_preview=None)
+    assert _describe_media(photo) == "photo"
+    doc_attr = SimpleNamespace(file_name="report.pdf")
+    document = SimpleNamespace(photo=None, voice=None, video_note=None, video=None,
+                              audio=None, gif=None, sticker=None,
+                              document=SimpleNamespace(attributes=[doc_attr]),
+                              poll=None, contact=None, geo=None, web_preview=None)
+    assert _describe_media(document) == "document: report.pdf"
+    text = SimpleNamespace(photo=None, voice=None, video_note=None, video=None,
+                          audio=None, gif=None, sticker=None, document=None,
+                          poll=None, contact=None, geo=None, web_preview=None)
+    assert _describe_media(text) is None

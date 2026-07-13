@@ -7,7 +7,61 @@ from telethon import TelegramClient
 from telethon.errors import UsernameNotOccupiedError
 
 from .config import Config
-from .models import Dialog, Message, UserInfo
+from .models import Button, Dialog, Message, UserInfo
+
+
+def _extract_buttons(message) -> "list[list[Button]] | None":
+    """Map a Telethon message's inline keyboard to nested Button rows."""
+    rows = getattr(message, "buttons", None)
+    if not rows:
+        return None
+    result: list[list[Button]] = []
+    for row in rows:
+        brow: list[Button] = []
+        for b in row:
+            url = getattr(b, "url", None)
+            if url:
+                brow.append(Button(text=b.text, kind="url", url=url))
+            elif getattr(b, "data", None) is not None:
+                brow.append(Button(text=b.text, kind="callback"))
+            else:
+                brow.append(Button(text=b.text, kind="other"))
+        result.append(brow)
+    return result
+
+
+def _describe_media(message) -> "str | None":
+    """Return a short human-readable descriptor of a message's media, or None."""
+    if getattr(message, "photo", None):
+        return "photo"
+    if getattr(message, "voice", None):
+        return "voice"
+    if getattr(message, "video_note", None):
+        return "video_note"
+    if getattr(message, "video", None):
+        return "video"
+    if getattr(message, "audio", None):
+        return "audio"
+    if getattr(message, "gif", None):
+        return "gif"
+    if getattr(message, "sticker", None):
+        return "sticker"
+    document = getattr(message, "document", None)
+    if document:
+        name = None
+        for attr in getattr(document, "attributes", []):
+            if hasattr(attr, "file_name"):
+                name = attr.file_name
+        return f"document: {name}" if name else "document"
+    if getattr(message, "poll", None):
+        return "poll"
+    if getattr(message, "contact", None):
+        return "contact"
+    if getattr(message, "geo", None):
+        return "geo"
+    if getattr(message, "web_preview", None):
+        return "webpage"
+    return None
 
 
 class TelegramClientWrapper:
@@ -97,6 +151,24 @@ class TelegramClientWrapper:
             for d in dialogs
         ]
 
+    async def _to_message(self, m, chat_id: int | None = None, chat_name: str | None = None) -> Message:
+        """Convert a Telethon message into the Message model (with buttons/media)."""
+        sender = await m.get_sender()
+        sender_name: str | None = None
+        if sender is not None:
+            sender_name = telethon.utils.get_display_name(sender) or None
+        return Message(
+            id=m.id,
+            date=m.date.isoformat(),
+            text=m.text,
+            out=bool(m.out),
+            sender=sender_name,
+            buttons=_extract_buttons(m),
+            media=_describe_media(m),
+            chat_id=chat_id,
+            chat_name=chat_name,
+        )
+
     async def get_messages(
         self,
         dialog_id: int | None = None,
@@ -119,22 +191,7 @@ class TelegramClientWrapper:
         """
         entity = await self._resolve_entity(dialog_id=dialog_id, username=username, name=name)
         msgs = await self._client.get_messages(entity, limit=limit, add_offset=offset)
-        result: list[Message] = []
-        for m in msgs:
-            sender = await m.get_sender()
-            sender_name: str | None = None
-            if sender is not None:
-                sender_name = telethon.utils.get_display_name(sender) or None
-            result.append(
-                Message(
-                    id=m.id,
-                    date=m.date.isoformat(),
-                    text=m.text,
-                    out=bool(m.out),
-                    sender=sender_name,
-                )
-            )
-        return result
+        return [await self._to_message(m) for m in msgs]
 
     async def send_message(
         self,
