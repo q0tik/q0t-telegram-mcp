@@ -304,6 +304,66 @@ class TelegramClientWrapper:
         entity = await self._resolve_entity(dialog_id=dialog_id, username=username, name=name)
         await self._client.send_read_acknowledge(entity)
 
+    async def click_button(
+        self,
+        dialog_id: int | None = None,
+        username: str | None = None,
+        name: str | None = None,
+        message_id: int = 0,
+        text: str = "",
+        row: int | None = None,
+        col: int | None = None,
+    ) -> dict:
+        """Press an inline keyboard button on a bot message by its visible label.
+
+        Args:
+            dialog_id: Numeric Telegram ID from tg_dialogs. Most reliable.
+            username: Telegram @handle (leading @ optional).
+            name: Dialog display name. Least reliable; resolved by scanning dialogs.
+            message_id: ID of the bot message whose inline keyboard to click.
+            text: Visible label of the button to press.
+            row: Row index to disambiguate duplicate labels.
+            col: Column index to disambiguate duplicate labels.
+
+        Returns:
+            For callback buttons: {"answer": str | None, "alert": bool, "message": Message | None}.
+            For URL buttons: {"answer": None, "alert": False, "url": str, "message": Message}.
+
+        Raises:
+            ValueError: If the dialog/message cannot be found, has no inline
+                buttons, or no button matches the given text/row/col.
+        """
+        entity = await self._resolve_entity(dialog_id=dialog_id, username=username, name=name)
+        message = await self._client.get_messages(entity, ids=message_id)
+        if message is None:
+            raise ValueError(f"Message not found: id={message_id}")
+        rows = message.buttons
+        if not rows:
+            raise ValueError(f"Message {message_id} has no inline buttons")
+        target = None
+        labels: list[str] = []
+        for i, brow in enumerate(rows):
+            for j, b in enumerate(brow):
+                labels.append(b.text)
+                if b.text == text and (row is None or row == i) and (col is None or col == j):
+                    target = (i, j, b)
+                    break
+            if target is not None:
+                break
+        if target is None:
+            raise ValueError(f"Button not found: {text}. Available: {labels}")
+        i, j, btn = target
+        if getattr(btn, "url", None):
+            return {"answer": None, "alert": False, "url": btn.url,
+                    "message": await self._to_message(message)}
+        answer = await message.click(i, j)
+        updated = await self._client.get_messages(entity, ids=message_id)
+        return {
+            "answer": getattr(answer, "message", None),
+            "alert": bool(getattr(answer, "alert", False)),
+            "message": await self._to_message(updated) if updated else None,
+        }
+
     async def _resolve_entity(
         self,
         dialog_id: int | None = None,

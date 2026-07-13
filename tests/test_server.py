@@ -22,7 +22,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock
 
 from tg_mcp.models import Dialog, Message, UserInfo
-from tg_mcp.server import tg_me, tg_dialogs, tg_dialog, tg_send, tg_send_file, tg_forward, tg_read
+from tg_mcp.server import tg_me, tg_dialogs, tg_dialog, tg_send, tg_send_file, tg_forward, tg_read, tg_click
 
 
 # ---------------------------------------------------------------------------
@@ -905,3 +905,32 @@ class TestTgReadDisambiguation:
         client.mark_read.assert_called_once_with(
             dialog_id=None, username="eve", name="Eve"
         )
+
+
+class TestTgClick:
+    async def test_tg_click_returns_answer_and_updated_message(self, mock_client_wrapper) -> None:
+        client = _make_mock_client()
+        updated = Message(id=7, date="2026-07-13T00:00:00+00:00", text="Menu 2",
+                          out=False, sender="Bot", buttons=None, media=None)
+        client.click_button = AsyncMock(return_value={"answer": "Done!", "alert": False, "message": updated})
+        ctx = _make_ctx(client)
+        result = await tg_click(ctx, dialog_id=1, message_id=7, text="Next")
+        assert result["answer"] == "Done!"
+        assert result["alert"] is False
+        assert result["message"]["text"] == "Menu 2"
+        client.click_button.assert_called_once_with(
+            dialog_id=1, username=None, name=None, message_id=7, text="Next", row=None, col=None
+        )
+
+    async def test_tg_click_no_selector_raises(self, mock_client_wrapper) -> None:
+        client = _make_mock_client()
+        ctx = _make_ctx(client)
+        with pytest.raises(ValueError, match="One of dialog_id, username, or name"):
+            await tg_click(ctx, message_id=7, text="Next")
+
+    async def test_tg_click_error_returns_error_dict(self, mock_client_wrapper) -> None:
+        client = _make_mock_client()
+        client.click_button = AsyncMock(side_effect=ValueError("Message 7 has no inline buttons"))
+        ctx = _make_ctx(client)
+        result = await tg_click(ctx, dialog_id=1, message_id=7, text="Next")
+        assert "error" in result and "no inline buttons" in result["error"]

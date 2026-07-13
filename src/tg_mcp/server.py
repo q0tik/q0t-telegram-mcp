@@ -203,6 +203,34 @@ async def tg_read(
         return {"error": _error_message(e)}
 
 
+@mcp.tool()
+async def tg_click(
+    ctx: Context,
+    message_id: Annotated[int, Field(description="ID of the bot message whose inline keyboard to click.")],
+    text: Annotated[str, Field(description="Visible label of the button to press.")],
+    dialog_id: Annotated[Optional[int], Field(description="Numeric ID from tg_dialogs."), WithJsonSchema({"type": "integer", "description": "Numeric ID from tg_dialogs."})] = None,
+    username: Annotated[Optional[str], Field(description="Telegram @handle."), WithJsonSchema({"type": "string", "description": "Telegram @handle."})] = None,
+    name: Annotated[Optional[str], Field(description="Display name."), WithJsonSchema({"type": "string", "description": "Display name."})] = None,
+    row: Annotated[Optional[int], Field(description="Row index to disambiguate duplicate labels."), WithJsonSchema({"type": "integer", "description": "Row index to disambiguate duplicate labels."})] = None,
+    col: Annotated[Optional[int], Field(description="Column index to disambiguate duplicate labels."), WithJsonSchema({"type": "integer", "description": "Column index to disambiguate duplicate labels."})] = None,
+) -> dict:
+    """Press an inline keyboard button on a bot message. Returns the bot's callback answer and the (usually edited) message with its new buttons. Supply exactly one of dialog_id, username, or name."""
+    if dialog_id is None and username is None and name is None:
+        raise ValueError("One of dialog_id, username, or name must be provided")
+    client: TelegramClientWrapper = ctx.request_context.lifespan_context.client
+    try:
+        result = await client.click_button(
+            dialog_id=dialog_id, username=username, name=name,
+            message_id=message_id, text=text, row=row, col=col,
+        )
+        msg = result.get("message")
+        if msg is not None:
+            result["message"] = dataclasses.asdict(msg)
+        return result
+    except Exception as e:
+        return {"error": _error_message(e)}
+
+
 def run_server() -> None:
     """Start the MCP server. Blocks until the server is stopped."""
     mcp.run()
