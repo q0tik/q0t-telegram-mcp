@@ -20,9 +20,53 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from tg_mcp.client import TelegramClientWrapper
+from tg_mcp.client import TelegramClientWrapper, _pm
 from tg_mcp.config import Config
 from tg_mcp.models import Dialog, Message, UserInfo
+
+
+class TestPm:
+    """Unit tests for the _pm() parse_mode normalizer."""
+
+    def test_pm_markdown_returns_md(self) -> None:
+        """_pm("markdown") must return "md"."""
+        assert _pm("markdown") == "md"
+
+    def test_pm_md_returns_md(self) -> None:
+        """_pm("md") must return "md"."""
+        assert _pm("md") == "md"
+
+    def test_pm_html_returns_html(self) -> None:
+        """_pm("html") must return "html"."""
+        assert _pm("html") == "html"
+
+    def test_pm_none_string_returns_none(self) -> None:
+        """_pm("none") must return None (no parse mode)."""
+        assert _pm("none") is None
+
+    def test_pm_empty_string_returns_none(self) -> None:
+        """_pm("") must return None."""
+        assert _pm("") is None
+
+    def test_pm_none_value_returns_md(self) -> None:
+        """_pm(None) must default to "md"."""
+        assert _pm(None) == "md"
+
+    def test_pm_html_uppercase_returns_html(self) -> None:
+        """_pm("HTML") must be case-insensitive and return "html"."""
+        assert _pm("HTML") == "html"
+
+    def test_pm_bogus_value_defaults_to_md(self) -> None:
+        """_pm("bogus") unknown value must fall back to "md"."""
+        assert _pm("bogus") == "md"
+
+    def test_pm_plain_returns_none(self) -> None:
+        """_pm("plain") must return None (no parse mode)."""
+        assert _pm("plain") is None
+
+    def test_pm_case_insensitive_md(self) -> None:
+        """_pm("MD") case-insensitive must return "md"."""
+        assert _pm("MD") == "md"
 
 
 class TestConnect:
@@ -343,6 +387,83 @@ class TestSendMessage:
 
         # send_message must also have been called (after entity resolution)
         mock_telegram_client.send_message.assert_called_once()
+
+    async def test_send_message_forwards_reply_to_to_telethon(
+        self, mock_client_wrapper, mock_telegram_client
+    ) -> None:
+        """
+        send_message() must forward reply_to=42 as a kwarg to Telethon's send_message().
+
+        Expected: _client.send_message() is called with reply_to=42 in kwargs.
+        """
+        mock_telegram_client.send_message.reset_mock()
+
+        await mock_client_wrapper.send_message(
+            name="Alice", text="Hello", reply_to=42
+        )
+
+        mock_telegram_client.send_message.assert_called_once()
+        call_kwargs = mock_telegram_client.send_message.call_args.kwargs
+        assert call_kwargs.get("reply_to") == 42
+
+    async def test_send_message_forwards_parse_mode_html_to_telethon(
+        self, mock_client_wrapper, mock_telegram_client
+    ) -> None:
+        """
+        send_message() must normalize parse_mode="html" to "html" and forward
+        to Telethon's send_message().
+
+        Expected: _client.send_message() is called with parse_mode="html".
+        """
+        mock_telegram_client.send_message.reset_mock()
+
+        await mock_client_wrapper.send_message(
+            name="Alice", text="Hello", parse_mode="html"
+        )
+
+        mock_telegram_client.send_message.assert_called_once()
+        call_kwargs = mock_telegram_client.send_message.call_args.kwargs
+        assert call_kwargs.get("parse_mode") == "html"
+
+    async def test_send_message_forwards_parse_mode_none_to_telethon(
+        self, mock_client_wrapper, mock_telegram_client
+    ) -> None:
+        """
+        send_message() must normalize parse_mode="none" to None and forward
+        to Telethon's send_message().
+
+        Expected: _client.send_message() is called with parse_mode=None.
+        """
+        mock_telegram_client.send_message.reset_mock()
+
+        await mock_client_wrapper.send_message(
+            name="Alice", text="Hello", parse_mode="none"
+        )
+
+        mock_telegram_client.send_message.assert_called_once()
+        call_kwargs = mock_telegram_client.send_message.call_args.kwargs
+        assert call_kwargs.get("parse_mode") is None
+
+    async def test_send_message_forwards_both_reply_to_and_parse_mode(
+        self, mock_client_wrapper, mock_telegram_client
+    ) -> None:
+        """
+        send_message() must forward both reply_to and parse_mode (normalized)
+        together to Telethon's send_message().
+
+        Expected: _client.send_message() is called with both reply_to=99
+        and parse_mode="md" (normalized from "markdown").
+        """
+        mock_telegram_client.send_message.reset_mock()
+
+        await mock_client_wrapper.send_message(
+            name="Alice", text="Test", reply_to=99, parse_mode="markdown"
+        )
+
+        mock_telegram_client.send_message.assert_called_once()
+        call_kwargs = mock_telegram_client.send_message.call_args.kwargs
+        assert call_kwargs.get("reply_to") == 99
+        assert call_kwargs.get("parse_mode") == "md"
 
 
 class TestSendFile:
