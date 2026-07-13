@@ -952,6 +952,122 @@ def _fake_click_message(buttons, msg_id: int = 42, text: str = "msg text"):
     return msg
 
 
+class TestReact:
+    """Tests for TelegramClientWrapper.react() (real wrapper, exercises _resolve_entity and _client.send_reaction)."""
+
+    async def test_react_calls_send_reaction_with_emoji(
+        self, mock_client_wrapper, mock_telegram_client
+    ) -> None:
+        """
+        react() with remove=False calls _client.send_reaction(entity, message_id, reaction=emoji, big=big).
+
+        Expected: send_reaction is awaited once with reaction set to the emoji string.
+        """
+        mock_telegram_client.send_reaction = AsyncMock(return_value=None)
+        await mock_client_wrapper.react(name="Alice", message_id=42, emoji="👍", big=False, remove=False)
+        mock_telegram_client.send_reaction.assert_called_once()
+        call_args = mock_telegram_client.send_reaction.call_args
+        assert call_args.kwargs.get("reaction") == "👍"
+        assert call_args.kwargs.get("big") is False
+
+    async def test_react_calls_send_reaction_with_none_when_remove_true(
+        self, mock_client_wrapper, mock_telegram_client
+    ) -> None:
+        """
+        react() with remove=True calls _client.send_reaction(entity, message_id, reaction=None, big=big).
+
+        Expected: send_reaction is awaited once with reaction=None.
+        """
+        mock_telegram_client.send_reaction = AsyncMock(return_value=None)
+        await mock_client_wrapper.react(name="Alice", message_id=42, emoji="👍", big=False, remove=True)
+        mock_telegram_client.send_reaction.assert_called_once()
+        call_args = mock_telegram_client.send_reaction.call_args
+        assert call_args.kwargs.get("reaction") is None
+        assert call_args.kwargs.get("big") is False
+
+    async def test_react_with_big_true(
+        self, mock_client_wrapper, mock_telegram_client
+    ) -> None:
+        """
+        react() with big=True passes big=True to send_reaction().
+
+        Expected: send_reaction called with big=True.
+        """
+        mock_telegram_client.send_reaction = AsyncMock(return_value=None)
+        await mock_client_wrapper.react(name="Alice", message_id=42, emoji="🔥", big=True, remove=False)
+        mock_telegram_client.send_reaction.assert_called_once()
+        call_args = mock_telegram_client.send_reaction.call_args
+        assert call_args.kwargs.get("big") is True
+        assert call_args.kwargs.get("reaction") == "🔥"
+
+    async def test_react_resolves_entity_by_dialog_id(
+        self, mock_client_wrapper, mock_telegram_client
+    ) -> None:
+        """
+        react() resolves the dialog entity by dialog_id before calling send_reaction.
+
+        Expected: get_entity is called with dialog_id; send_reaction is called once.
+        """
+        mock_telegram_client.get_entity.reset_mock()
+        mock_telegram_client.get_entity.side_effect = None
+        mock_telegram_client.send_reaction = AsyncMock(return_value=None)
+        await mock_client_wrapper.react(dialog_id=123, message_id=42, emoji="😂", remove=False)
+        mock_telegram_client.get_entity.assert_called_once_with(123)
+        mock_telegram_client.send_reaction.assert_called_once()
+
+    async def test_react_resolves_entity_by_username(
+        self, mock_client_wrapper, mock_telegram_client
+    ) -> None:
+        """
+        react() resolves the dialog entity by username (stripping @) before calling send_reaction.
+
+        Expected: get_entity is called with stripped username; send_reaction is called once.
+        """
+        mock_telegram_client.get_entity.reset_mock()
+        mock_telegram_client.get_entity.side_effect = None
+        mock_telegram_client.send_reaction = AsyncMock(return_value=None)
+        await mock_client_wrapper.react(username="@alice", message_id=42, emoji="👍", remove=False)
+        mock_telegram_client.get_entity.assert_called_once_with("alice")
+        mock_telegram_client.send_reaction.assert_called_once()
+
+    async def test_react_resolves_entity_by_name(
+        self, mock_client_wrapper, mock_telegram_client
+    ) -> None:
+        """
+        react() resolves the dialog entity by name via iter_dialogs before calling send_reaction.
+
+        Expected: iter_dialogs is used; send_reaction is called once.
+        """
+        mock_telegram_client.send_reaction = AsyncMock(return_value=None)
+        await mock_client_wrapper.react(name="Alice", message_id=42, emoji="❤️", remove=False)
+        mock_telegram_client.send_reaction.assert_called_once()
+
+    async def test_react_no_selector_raises_value_error(
+        self, mock_client_wrapper, mock_telegram_client
+    ) -> None:
+        """
+        react() raises ValueError when no dialog selector is provided.
+
+        Expected: ValueError with "One of dialog_id, username, or name".
+        """
+        with pytest.raises(ValueError, match="One of dialog_id, username, or name"):
+            await mock_client_wrapper.react(message_id=42, emoji="👍")
+
+    async def test_react_message_id_is_passed_through(
+        self, mock_client_wrapper, mock_telegram_client
+    ) -> None:
+        """
+        react() passes the message_id argument correctly to send_reaction.
+
+        Expected: send_reaction is called with message_id as second positional arg.
+        """
+        mock_telegram_client.send_reaction = AsyncMock(return_value=None)
+        await mock_client_wrapper.react(name="Alice", message_id=99, emoji="👍", remove=False)
+        call_args = mock_telegram_client.send_reaction.call_args
+        # message_id should be second positional argument or in kwargs
+        assert 99 in call_args.args or call_args.kwargs.get("message_id") == 99 or call_args.args[1] == 99
+
+
 class TestClickButton:
     """Tests for TelegramClientWrapper.click_button() (real logic, not mocked)."""
 

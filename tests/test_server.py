@@ -22,7 +22,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock
 
 from tg_mcp.models import Dialog, Message, UserInfo
-from tg_mcp.server import tg_me, tg_dialogs, tg_dialog, tg_send, tg_send_file, tg_forward, tg_read, tg_click
+from tg_mcp.server import tg_me, tg_dialogs, tg_dialog, tg_send, tg_send_file, tg_forward, tg_read, tg_click, tg_react
 
 
 # ---------------------------------------------------------------------------
@@ -73,6 +73,7 @@ def _make_mock_client():
     client.send_file = AsyncMock(return_value=None)
     client.forward_message = AsyncMock(return_value=None)
     client.mark_read = AsyncMock(return_value=None)
+    client.react = AsyncMock(return_value=None)
     return client
 
 
@@ -934,3 +935,21 @@ class TestTgClick:
         ctx = _make_ctx(client)
         result = await tg_click(ctx, dialog_id=1, message_id=7, text="Next")
         assert "error" in result and "no inline buttons" in result["error"]
+
+
+class TestTgReact:
+    async def test_tg_react_passes_args(self, mock_client_wrapper) -> None:
+        client = _make_mock_client()
+        client.react = AsyncMock(return_value=None)
+        ctx = _make_ctx(client)
+        result = await tg_react(ctx, dialog_id=1, message_id=7, emoji="👍")
+        assert result == {"ok": True}
+        client.react.assert_called_once_with(
+            dialog_id=1, username=None, name=None, message_id=7, emoji="👍", big=False, remove=False
+        )
+
+    async def test_tg_react_no_selector_raises(self, mock_client_wrapper) -> None:
+        client = _make_mock_client()
+        ctx = _make_ctx(client)
+        with pytest.raises(ValueError, match="One of dialog_id, username, or name"):
+            await tg_react(ctx, message_id=7, emoji="👍")

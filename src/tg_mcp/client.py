@@ -304,6 +304,34 @@ class TelegramClientWrapper:
         entity = await self._resolve_entity(dialog_id=dialog_id, username=username, name=name)
         await self._client.send_read_acknowledge(entity)
 
+    async def react(
+        self,
+        dialog_id: int | None = None,
+        username: str | None = None,
+        name: str | None = None,
+        message_id: int = 0,
+        emoji: str = "",
+        big: bool = False,
+        remove: bool = False,
+    ) -> None:
+        """React to a message with an emoji or remove the reaction.
+
+        Args:
+            dialog_id: Numeric Telegram ID from tg_dialogs. Most reliable.
+            username: Telegram @handle (leading @ optional).
+            name: Dialog display name. Least reliable; resolved by scanning dialogs.
+            message_id: ID of the message to react to.
+            emoji: Single unicode emoji, e.g. '👍'. Ignored when remove=True.
+            big: Play a big/animated reaction.
+            remove: Remove the reaction instead of adding one.
+
+        Raises:
+            ValueError: If no dialog matching the provided selector can be found.
+        """
+        entity = await self._resolve_entity(dialog_id=dialog_id, username=username, name=name)
+        reaction = None if remove else emoji
+        await self._client.send_reaction(entity, message_id, reaction=reaction, big=big)
+
     async def click_button(
         self,
         dialog_id: int | None = None,
