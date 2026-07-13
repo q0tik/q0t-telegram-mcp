@@ -1225,3 +1225,90 @@ class TestDelete:
         mock_telegram_client.delete_messages.assert_called_once()
         call_kwargs = mock_telegram_client.delete_messages.call_args.kwargs
         assert call_kwargs.get("revoke") is False
+
+
+class TestEditMessage:
+    """Tests for TelegramClientWrapper.edit_message() (real wrapper, exercises _resolve_entity and _client.edit_message)."""
+
+    async def test_edit_message_default_parse_mode_markdown(
+        self, mock_client_wrapper, mock_telegram_client
+    ) -> None:
+        """
+        edit_message() with default parse_mode normalizes "markdown" to "md"
+        and passes it to _client.edit_message().
+
+        Expected: _client.edit_message is awaited once with parse_mode="md".
+        """
+        mock_telegram_client.edit_message = AsyncMock(return_value=None)
+        await mock_client_wrapper.edit_message(name="Alice", message_id=42, text="updated")
+        mock_telegram_client.edit_message.assert_awaited_once_with(
+            mock_client_wrapper._client.get_entity.return_value, 42, "updated", parse_mode="md"
+        )
+
+    async def test_edit_message_parse_mode_none(
+        self, mock_client_wrapper, mock_telegram_client
+    ) -> None:
+        """
+        edit_message() with parse_mode="none" normalizes it to None
+        and passes it to _client.edit_message().
+
+        Expected: _client.edit_message is awaited once with parse_mode=None.
+        """
+        mock_telegram_client.edit_message = AsyncMock(return_value=None)
+        await mock_client_wrapper.edit_message(name="Alice", message_id=42, text="updated", parse_mode="none")
+        mock_telegram_client.edit_message.assert_awaited_once_with(
+            mock_client_wrapper._client.get_entity.return_value, 42, "updated", parse_mode=None
+        )
+
+    async def test_edit_message_parse_mode_html(
+        self, mock_client_wrapper, mock_telegram_client
+    ) -> None:
+        """
+        edit_message() with parse_mode="html" normalizes it to "html"
+        and passes it to _client.edit_message().
+
+        Expected: _client.edit_message is awaited once with parse_mode="html".
+        """
+        mock_telegram_client.edit_message = AsyncMock(return_value=None)
+        await mock_client_wrapper.edit_message(name="Alice", message_id=42, text="updated", parse_mode="html")
+        mock_telegram_client.edit_message.assert_awaited_once_with(
+            mock_client_wrapper._client.get_entity.return_value, 42, "updated", parse_mode="html"
+        )
+
+    async def test_edit_message_resolves_entity_by_dialog_id(
+        self, mock_client_wrapper, mock_telegram_client
+    ) -> None:
+        """
+        edit_message() resolves the dialog entity by dialog_id before editing.
+
+        Expected: get_entity is called with dialog_id; edit_message is awaited once.
+        """
+        mock_telegram_client.get_entity.reset_mock()
+        mock_telegram_client.get_entity.side_effect = None
+        mock_telegram_client.edit_message = AsyncMock(return_value=None)
+        await mock_client_wrapper.edit_message(dialog_id=123, message_id=42, text="fixed")
+        mock_telegram_client.get_entity.assert_called_once_with(123)
+        mock_telegram_client.edit_message.assert_awaited_once()
+
+    async def test_edit_message_resolves_entity_by_name(
+        self, mock_client_wrapper, mock_telegram_client
+    ) -> None:
+        """
+        edit_message() resolves the dialog entity by name via iter_dialogs before editing.
+
+        Expected: iter_dialogs is used; edit_message is awaited once.
+        """
+        mock_telegram_client.edit_message = AsyncMock(return_value=None)
+        await mock_client_wrapper.edit_message(name="Alice", message_id=42, text="fixed")
+        mock_telegram_client.edit_message.assert_awaited_once()
+
+    async def test_edit_message_no_selector_raises_value_error(
+        self, mock_client_wrapper, mock_telegram_client
+    ) -> None:
+        """
+        edit_message() raises ValueError when no dialog selector is provided.
+
+        Expected: ValueError with "One of dialog_id, username, or name".
+        """
+        with pytest.raises(ValueError, match="One of dialog_id, username, or name"):
+            await mock_client_wrapper.edit_message(message_id=42, text="fixed")

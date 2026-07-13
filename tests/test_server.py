@@ -22,7 +22,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock
 
 from tg_mcp.models import Dialog, Message, UserInfo
-from tg_mcp.server import tg_me, tg_dialogs, tg_dialog, tg_send, tg_send_file, tg_forward, tg_read, tg_click, tg_react, tg_delete
+from tg_mcp.server import tg_me, tg_dialogs, tg_dialog, tg_send, tg_send_file, tg_forward, tg_read, tg_click, tg_react, tg_delete, tg_edit
 
 
 # ---------------------------------------------------------------------------
@@ -971,3 +971,21 @@ class TestTgDelete:
         ctx = _make_ctx(client)
         with pytest.raises(ValueError, match="One of dialog_id, username, or name"):
             await tg_delete(ctx, message_ids=[7])
+
+
+class TestTgEdit:
+    async def test_tg_edit_passes_args(self, mock_client_wrapper) -> None:
+        client = _make_mock_client()
+        client.edit_message = AsyncMock(return_value=None)
+        ctx = _make_ctx(client)
+        result = await tg_edit(ctx, dialog_id=1, message_id=7, text="fixed", parse_mode="none")
+        assert result == {"ok": True}
+        client.edit_message.assert_called_once_with(
+            dialog_id=1, username=None, name=None, message_id=7, text="fixed", parse_mode="none"
+        )
+
+    async def test_tg_edit_no_selector_raises(self, mock_client_wrapper) -> None:
+        client = _make_mock_client()
+        ctx = _make_ctx(client)
+        with pytest.raises(ValueError, match="One of dialog_id, username, or name"):
+            await tg_edit(ctx, message_id=7, text="fixed")

@@ -275,6 +275,28 @@ async def tg_delete(
         return {"error": _error_message(e)}
 
 
+@mcp.tool()
+async def tg_edit(
+    ctx: Context,
+    message_id: Annotated[int, Field(description="ID of your own message to edit.")],
+    text: Annotated[str, Field(description="New message text.")],
+    dialog_id: Annotated[Optional[int], Field(description="Numeric ID from tg_dialogs."), WithJsonSchema({"type": "integer", "description": "Numeric ID from tg_dialogs."})] = None,
+    username: Annotated[Optional[str], Field(description="Telegram @handle."), WithJsonSchema({"type": "string", "description": "Telegram @handle."})] = None,
+    name: Annotated[Optional[str], Field(description="Display name."), WithJsonSchema({"type": "string", "description": "Display name."})] = None,
+    parse_mode: Annotated[str, Field(description="Text formatting: 'markdown' (default), 'html', or 'none'.")] = "markdown",
+) -> dict:
+    """Edit one of your own sent messages. Supply exactly one of dialog_id, username, or name."""
+    if dialog_id is None and username is None and name is None:
+        raise ValueError("One of dialog_id, username, or name must be provided")
+    client: TelegramClientWrapper = ctx.request_context.lifespan_context.client
+    try:
+        await client.edit_message(dialog_id=dialog_id, username=username, name=name,
+                                 message_id=message_id, text=text, parse_mode=parse_mode)
+        return {"ok": True}
+    except Exception as e:
+        return {"error": _error_message(e)}
+
+
 def run_server() -> None:
     """Start the MCP server. Blocks until the server is stopped."""
     mcp.run()

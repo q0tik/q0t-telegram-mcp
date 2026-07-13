@@ -420,6 +420,31 @@ class TelegramClientWrapper:
         await self._client.delete_messages(entity, ids, revoke=revoke)
         return len(ids)
 
+    async def edit_message(
+        self,
+        dialog_id: int | None = None,
+        username: str | None = None,
+        name: str | None = None,
+        message_id: int = 0,
+        text: str = "",
+        parse_mode: str | None = "markdown",
+    ) -> None:
+        """Edit one of your own sent messages.
+
+        Args:
+            dialog_id: Numeric Telegram ID from tg_dialogs. Most reliable.
+            username: Telegram @handle (leading @ optional).
+            name: Dialog display name. Least reliable; resolved by scanning dialogs.
+            message_id: ID of the message to edit.
+            text: New message text.
+            parse_mode: Text formatting: "markdown" (default), "html", or "none".
+
+        Raises:
+            ValueError: If no dialog matching the provided selector can be found.
+        """
+        entity = await self._resolve_entity(dialog_id=dialog_id, username=username, name=name)
+        await self._client.edit_message(entity, message_id, text, parse_mode=_pm(parse_mode))
+
     async def _resolve_entity(
         self,
         dialog_id: int | None = None,
