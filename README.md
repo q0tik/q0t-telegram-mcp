@@ -18,12 +18,20 @@ This project fixes both and builds a reliable, well-tested replacement.
 | `tg_me` | — | `UserInfo` | Get current Telegram account info |
 | `tg_dialogs` | `unread_only` (bool, default `false`), `limit` (int, default `20`), `offset` (int, default `0`) | List of dialogs — each has `id`, `name`, `username` (or `null`), `unread_count`, type flags, `last_message`, `date` | List dialogs (chats, groups, channels) |
 | `tg_dialog` | `dialog_id` (int), `username` (str), or `name` (str) — at least one required; `limit` (int, default `20`), `offset` (int, default `0`) | List of messages | Get messages from a dialog |
-| `tg_send` | `dialog_id` (int), `username` (str), or `name` (str) — at least one required; `text` (str) | `{"ok": true}` | Send a message — calls `SendMessage`, never `SaveDraft` |
+| `tg_send` | dialog selector — at least one required; `text` (str); `reply_to` (int, optional); `parse_mode` (`markdown` default, `html`, or `none`) | `{"ok": true}` | Send a message — calls `SendMessage`, never `SaveDraft` |
+| `tg_send_file` | dialog selector — at least one required; `file_path` (str); `caption` (str, optional) | `{"ok": true}` | Send a file to a dialog |
+| `tg_forward` | `message_id` (int); one source `from_*` selector; one destination `to_*` selector | `{"ok": true}` | Forward a message from one dialog to another |
 | `tg_read` | `dialog_id` (int), `username` (str), or `name` (str) — at least one required | `{"ok": true}` | Mark all messages in a dialog as read |
+| `tg_click` | dialog selector; `message_id` (int); `text` (str, button label); `row`/`col` (int, optional) | `{answer, alert, message, url?}` | Press an inline keyboard button on a bot message; returns the callback answer and the (usually edited) message |
+| `tg_react` | dialog selector; `message_id` (int); `emoji` (str); `big` (bool, default `false`); `remove` (bool, default `false`) | `{"ok": true}` | React to a message with an emoji (or remove the reaction) |
+| `tg_edit` | dialog selector; `message_id` (int); `text` (str); `parse_mode` (`markdown` default, `html`, `none`) | `{"ok": true}` | Edit one of your own sent messages |
+| `tg_delete` | dialog selector; `message_ids` (list[int]); `revoke` (bool, default `true`) | `{"ok": true, "deleted": n}` | Delete one or more messages |
+| `tg_search` | `query` (str); dialog selector (optional — omit for a global search); `limit` (int, default `20`) | List of messages (each with `chat_id`/`chat_name`) | Search messages by text, per-dialog or globally |
+| `tg_download` | dialog selector; `message_id` (int); `dest_dir` (str, optional) | `{path, media, size}` | Download a message's media (photo/voice/document/…) to disk |
 
 ### Identifying a dialog
 
-Three selectors are available for `tg_dialog`, `tg_send`, and `tg_read`. Supply at least one:
+The same three selectors are available for every message tool (`tg_dialog`, `tg_send`, `tg_send_file`, `tg_read`, `tg_click`, `tg_react`, `tg_edit`, `tg_delete`, `tg_download`; and optionally `tg_search`). Supply at least one (except `tg_search`, where omitting them means a global search):
 
 | Selector | Type | Notes |
 |----------|------|-------|
