@@ -916,3 +916,159 @@ def test_describe_media_animated_gif_with_both_gif_and_video_attrs():
         poll=None, contact=None, geo=None, web_preview=None
     )
     assert _describe_media(animated_gif) == "gif"
+
+
+# ---------------------------------------------------------------------------
+# Tests for TelegramClientWrapper.click_button() — real behavior.
+#
+# Unlike TestTgClick in test_server.py (which mocks click_button entirely),
+# these tests exercise the actual button-matching, URL-branch, error-path,
+# row/col disambiguation, and post-click re-fetch logic in client.py.
+# ---------------------------------------------------------------------------
+
+
+def _fake_click_message(buttons, msg_id: int = 42, text: str = "msg text"):
+    """Build a MagicMock resembling a Telethon Message with inline buttons.
+
+    Mirrors mock_telegram_message in conftest.py (id, date, text, out,
+    get_sender), plus .buttons and an AsyncMock .click() as click_button()
+    requires.
+    """
+    from datetime import datetime, timezone
+
+    msg = MagicMock()
+    msg.id = msg_id
+    msg.date = datetime(2026, 3, 8, 11, 30, 0, tzinfo=timezone.utc)
+    msg.text = text
+    msg.out = False
+    msg.buttons = buttons
+    msg.click = AsyncMock()
+
+    sender = MagicMock()
+    sender.first_name = "Bot"
+    sender.last_name = None
+    sender.username = "somebot"
+    msg.get_sender = AsyncMock(return_value=sender)
+    return msg
+
+
+class TestClickButton:
+    """Tests for TelegramClientWrapper.click_button() (real logic, not mocked)."""
+
+    async def test_click_callback_button_awaits_click_and_maps_answer(
+        self, mock_client_wrapper, mock_telegram_client
+    ) -> None:
+        """
+        Clicking a callback button (has .data, no .url) must await
+        message.click(i, j) with the button's row/col indices, and the
+        result dict must map answer/alert from the BotCallbackAnswer and
+        message from the POST-CLICK re-fetch (not the original message).
+
+        Expected: click(0, 0) awaited once; answer == "Clicked!";
+        alert is True; message is a Message instance built from the
+        re-fetched message (text == "updated text").
+        """
+        btn = _fake_button("Yes", data=b"yes")
+        initial = _fake_click_message(buttons=[[btn]], text="original text")
+        updated = _fake_click_message(buttons=[[btn]], text="updated text")
+        initial.click.return_value = SimpleNamespace(message="Clicked!", alert=True)
+
+        mock_telegram_client.get_messages.side_effect = [initial, updated]
+
+        result = await mock_client_wrapper.click_button(
+            name="Alice", message_id=42, text="Yes"
+        )
+
+        initial.click.assert_awaited_once_with(0, 0)
+        assert result["answer"] == "Clicked!"
+        assert result["alert"] is True
+        assert isinstance(result["message"], Message)
+        assert result["message"].text == "updated text"
+
+    async def test_click_url_button_skips_click_and_returns_url(
+        self, mock_client_wrapper, mock_telegram_client
+    ) -> None:
+        """
+        Clicking a button with a .url set must NOT perform a network click —
+        it must return the url directly without awaiting message.click().
+
+        Expected: result["url"] == the button's url; answer is None;
+        alert is False; message.click is never awaited; message is a
+        Message instance built from the original (single) fetch.
+        """
+        btn = _fake_button("Visit", url="https://example.com")
+        msg = _fake_click_message(buttons=[[btn]])
+        mock_telegram_client.get_messages.side_effect = None
+        mock_telegram_client.get_messages.return_value = msg
+
+        result = await mock_client_wrapper.click_button(
+            name="Alice", message_id=42, text="Visit"
+        )
+
+        assert result["url"] == "https://example.com"
+        assert result["answer"] is None
+        assert result["alert"] is False
+        msg.click.assert_not_awaited()
+        assert isinstance(result["message"], Message)
+        # Only the initial get_messages() fetch happens — no re-fetch for URL buttons.
+        assert mock_telegram_client.get_messages.await_count == 1
+
+    async def test_click_button_no_buttons_raises_value_error(
+        self, mock_client_wrapper, mock_telegram_client
+    ) -> None:
+        """
+        When the target message has no inline keyboard (buttons=None),
+        click_button() must raise ValueError mentioning "has no inline buttons".
+        """
+        msg = _fake_click_message(buttons=None)
+        mock_telegram_client.get_messages.side_effect = None
+        mock_telegram_client.get_messages.return_value = msg
+
+        with pytest.raises(ValueError, match="has no inline buttons"):
+            await mock_client_wrapper.click_button(
+                name="Alice", message_id=42, text="Yes"
+            )
+
+    async def test_click_button_not_found_raises_with_available_labels(
+        self, mock_client_wrapper, mock_telegram_client
+    ) -> None:
+        """
+        When no button matches the requested text, click_button() must raise
+        ValueError mentioning "Button not found" and list the available
+        button labels in the error message.
+        """
+        msg = _fake_click_message(buttons=[[_fake_button("Yes", data=b"y")],
+                                            [_fake_button("No", data=b"n")]])
+        mock_telegram_client.get_messages.side_effect = None
+        mock_telegram_client.get_messages.return_value = msg
+
+        with pytest.raises(ValueError, match="Button not found") as exc_info:
+            await mock_client_wrapper.click_button(
+                name="Alice", message_id=42, text="Maybe"
+            )
+        assert "Yes" in str(exc_info.value)
+        assert "No" in str(exc_info.value)
+
+    async def test_click_button_row_col_disambiguates_duplicate_labels(
+        self, mock_client_wrapper, mock_telegram_client
+    ) -> None:
+        """
+        When two buttons share the same visible text in different positions,
+        row/col must select the intended one: click() is awaited with the
+        SECOND button's indices, not the first match.
+        """
+        btn_a = _fake_button("Dup", data=b"a")
+        btn_b = _fake_button("Dup", data=b"b")
+        msg = _fake_click_message(buttons=[[btn_a], [btn_b]])
+        updated = _fake_click_message(buttons=[[btn_a], [btn_b]])
+        msg.click.return_value = SimpleNamespace(message=None, alert=False)
+
+        mock_telegram_client.get_messages.side_effect = [msg, updated]
+
+        result = await mock_client_wrapper.click_button(
+            name="Alice", message_id=42, text="Dup", row=1, col=0
+        )
+
+        msg.click.assert_awaited_once_with(1, 0)
+        assert result["answer"] is None
+        assert result["alert"] is False
