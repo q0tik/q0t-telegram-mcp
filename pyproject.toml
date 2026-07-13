@@ -1,12 +1,14 @@
 [project]
 name = "q0t-telegram-mcp"
-version = "0.3.3"
+version = "0.4.0"
 description = "Telegram MCP server that actually sends messages"
 requires-python = ">=3.12"
 dependencies = [
     "click>=8.0.0",
     "mcp>=1.0.0",
-    "telethon>=1.36.0",
+    # >=1.44.0 (TL layer 227): earlier layers raise TypeNotFoundError on the new
+    # Dialog constructor (0xfc89f7f3) that Telegram now returns from getDialogs.
+    "telethon>=1.44.0",
 ]
 
 [project.scripts]

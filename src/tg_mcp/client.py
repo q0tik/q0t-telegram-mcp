@@ -28,10 +28,16 @@ class TelegramClientWrapper:
             RuntimeError: If no valid session exists. Run
                 ``q0t-telegram-mcp auth --phone <phone>`` to authenticate first.
         """
+        # receive_updates=False: this MCP is strictly request/response and never
+        # consumes the update stream. Disabling it stops Telethon from fetching
+        # and deserializing the update difference — the path that raises
+        # TypeNotFoundError when Telegram sends a TL constructor newer than the
+        # installed Telethon layer (the intermittent "garbage bytes" crash).
         self._client = TelegramClient(
             str(self._config.session_path),
             self._config.app_id,
             self._config.api_hash,
+            receive_updates=False,
         )
         await self._client.connect()
         if not await self._client.is_user_authorized():

@@ -91,6 +91,52 @@ class TestRunServer:
             mock_run.assert_called_once()
 
 
+class TestErrorSpamGuard:
+    """Regression tests: a failing tool must never dump a huge raw payload.
+
+    Telethon raises TypeNotFoundError when Telegram sends a TL constructor
+    unknown to the installed Telethon version. That exception's str() embeds
+    the entire remaining MTProto buffer — hundreds of KB of raw bytes — which
+    previously escaped the ``except ValueError`` guard, propagated to FastMCP,
+    and was stringified straight into the model's context.
+    """
+
+    async def test_tg_dialogs_non_valueerror_is_caught(self, mock_client_wrapper) -> None:
+        """A non-ValueError exception (e.g. TypeNotFoundError) is caught and
+        returned as an error dict, not propagated."""
+        client = _make_mock_client()
+        client.get_dialogs = AsyncMock(side_effect=RuntimeError("boom"))
+        ctx = _make_ctx(client)
+        result = await tg_dialogs(ctx)  # must not raise
+        assert isinstance(result, list)
+        assert len(result) == 1
+        assert "error" in result[0]
+
+    async def test_tg_dialogs_huge_error_is_truncated(self, mock_client_wrapper) -> None:
+        """A multi-hundred-KB exception message is truncated to a short string
+        and the raw buffer never reaches the caller."""
+        buffer_marker = "RAWBYTES" + "x" * 500_000
+        client = _make_mock_client()
+        client.get_dialogs = AsyncMock(
+            side_effect=Exception(f"Could not find Constructor. Remaining bytes: {buffer_marker}")
+        )
+        ctx = _make_ctx(client)
+        result = await tg_dialogs(ctx)
+        assert isinstance(result, list) and len(result) == 1
+        err = result[0]["error"]
+        assert len(err) < 1000, f"error must be short, got {len(err)} chars"
+        assert "x" * 1000 not in err, "raw buffer bytes must not appear in the error"
+
+    async def test_tg_send_huge_error_is_truncated(self, mock_client_wrapper) -> None:
+        """The same guard applies to dict-returning tools like tg_send."""
+        client = _make_mock_client()
+        client.send_message = AsyncMock(side_effect=Exception("Remaining bytes: " + "y" * 400_000))
+        ctx = _make_ctx(client)
+        result = await tg_send(ctx, name="Alice", text="Hi")  # must not raise
+        assert isinstance(result, dict) and "error" in result
+        assert len(result["error"]) < 1000
+
+
 class TestTgMe:
     """Tests for the tg_me MCP tool."""
 

@@ -39,6 +39,23 @@ async def lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
 mcp = FastMCP("q0t-telegram-mcp", lifespan=lifespan)
 
 
+_MAX_ERROR_CHARS = 300
+
+
+def _error_message(exc: Exception) -> str:
+    """Return a short, safe error string for a failed tool call.
+
+    Telethon raises ``TypeNotFoundError`` when Telegram sends a TL constructor
+    unknown to the installed Telethon version. That exception's ``str()`` embeds
+    the entire remaining MTProto buffer — hundreds of KB of raw bytes. Left
+    unguarded it propagates to FastMCP and is stringified straight into the
+    model's context. Always collapse it to a short, single-line message.
+    """
+    text = " ".join(str(exc).split())
+    if len(text) > _MAX_ERROR_CHARS:
+        text = f"{text[:_MAX_ERROR_CHARS]}… [truncated, {len(text)} chars total]"
+    return f"{type(exc).__name__}: {text}" if text else type(exc).__name__
+
 
 @mcp.tool()
 async def tg_me(ctx: Context) -> dict:
@@ -47,8 +64,8 @@ async def tg_me(ctx: Context) -> dict:
     try:
         user_info = await client.get_me()
         return dataclasses.asdict(user_info)
-    except ValueError as e:
-        return {"error": str(e)}
+    except Exception as e:
+        return {"error": _error_message(e)}
 
 
 @mcp.tool()
@@ -63,8 +80,8 @@ async def tg_dialogs(
     try:
         dialogs = await client.get_dialogs(unread_only=unread_only, limit=limit, offset=offset)
         return [dataclasses.asdict(d) for d in dialogs]
-    except ValueError as e:
-        return [{"error": str(e)}]
+    except Exception as e:
+        return [{"error": _error_message(e)}]
 
 
 @mcp.tool()
@@ -85,8 +102,8 @@ async def tg_dialog(
             dialog_id=dialog_id, username=username, name=name, limit=limit, offset=offset
         )
         return [dataclasses.asdict(m) for m in messages]
-    except ValueError as e:
-        return [{"error": str(e)}]
+    except Exception as e:
+        return [{"error": _error_message(e)}]
 
 
 @mcp.tool()
@@ -104,8 +121,8 @@ async def tg_send(
     try:
         await client.send_message(text=text, dialog_id=dialog_id, username=username, name=name)
         return {"ok": True}
-    except ValueError as e:
-        return {"error": str(e)}
+    except Exception as e:
+        return {"error": _error_message(e)}
 
 
 @mcp.tool()
@@ -130,8 +147,8 @@ async def tg_send_file(
             caption=caption,
         )
         return {"ok": True}
-    except ValueError as e:
-        return {"error": str(e)}
+    except Exception as e:
+        return {"error": _error_message(e)}
 
 
 @mcp.tool()
@@ -162,8 +179,8 @@ async def tg_forward(
             message_id=message_id,
         )
         return {"ok": True}
-    except ValueError as e:
-        return {"error": str(e)}
+    except Exception as e:
+        return {"error": _error_message(e)}
 
 
 @mcp.tool()
@@ -180,8 +197,8 @@ async def tg_read(
     try:
         await client.mark_read(dialog_id=dialog_id, username=username, name=name)
         return {"ok": True}
-    except ValueError as e:
-        return {"error": str(e)}
+    except Exception as e:
+        return {"error": _error_message(e)}
 
 
 def run_server() -> None:
