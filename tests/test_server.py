@@ -22,7 +22,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock
 
 from tg_mcp.models import Dialog, Message, UserInfo
-from tg_mcp.server import tg_me, tg_dialogs, tg_dialog, tg_send, tg_send_file, tg_forward, tg_read, tg_click, tg_react, tg_delete, tg_edit
+from tg_mcp.server import tg_me, tg_dialogs, tg_dialog, tg_send, tg_send_file, tg_forward, tg_read, tg_click, tg_react, tg_delete, tg_edit, tg_search
 
 
 # ---------------------------------------------------------------------------
@@ -989,3 +989,26 @@ class TestTgEdit:
         ctx = _make_ctx(client)
         with pytest.raises(ValueError, match="One of dialog_id, username, or name"):
             await tg_edit(ctx, message_id=7, text="fixed")
+
+
+class TestTgSearch:
+    async def test_tg_search_returns_list_of_dicts(self, mock_client_wrapper) -> None:
+        client = _make_mock_client()
+        hit = Message(id=9, date="2026-07-13T00:00:00+00:00", text="found it",
+                      out=False, sender="A", chat_id=555, chat_name="Chat")
+        client.search = AsyncMock(return_value=[hit])
+        ctx = _make_ctx(client)
+        result = await tg_search(ctx, query="found", dialog_id=1, limit=10)
+        assert isinstance(result, list)
+        assert result[0]["text"] == "found it"
+        assert result[0]["chat_id"] == 555
+        client.search.assert_called_once_with(
+            query="found", dialog_id=1, username=None, name=None, limit=10
+        )
+
+    async def test_tg_search_error_returns_error_list(self, mock_client_wrapper) -> None:
+        client = _make_mock_client()
+        client.search = AsyncMock(side_effect=ValueError("Dialog not found: name=X"))
+        ctx = _make_ctx(client)
+        result = await tg_search(ctx, query="x", name="X")
+        assert isinstance(result, list) and "error" in result[0]

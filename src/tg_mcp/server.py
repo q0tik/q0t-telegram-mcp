@@ -297,6 +297,24 @@ async def tg_edit(
         return {"error": _error_message(e)}
 
 
+@mcp.tool()
+async def tg_search(
+    ctx: Context,
+    query: Annotated[str, Field(description="Text to search for.")],
+    dialog_id: Annotated[Optional[int], Field(description="Restrict to this dialog. Omit all selectors for a global search."), WithJsonSchema({"type": "integer", "description": "Restrict to this dialog. Omit all selectors for a global search."})] = None,
+    username: Annotated[Optional[str], Field(description="Restrict to this @handle."), WithJsonSchema({"type": "string", "description": "Restrict to this @handle."})] = None,
+    name: Annotated[Optional[str], Field(description="Restrict to this display name."), WithJsonSchema({"type": "string", "description": "Restrict to this display name."})] = None,
+    limit: Annotated[int, Field(description="Maximum number of results.", ge=1)] = 20,
+) -> list[dict]:
+    """Search messages by text. With a dialog selector, searches that dialog; without any selector, searches globally. Results include chat_id/chat_name."""
+    client: TelegramClientWrapper = ctx.request_context.lifespan_context.client
+    try:
+        messages = await client.search(query=query, dialog_id=dialog_id, username=username, name=name, limit=limit)
+        return [dataclasses.asdict(m) for m in messages]
+    except Exception as e:
+        return [{"error": _error_message(e)}]
+
+
 def run_server() -> None:
     """Start the MCP server. Blocks until the server is stopped."""
     mcp.run()

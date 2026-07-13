@@ -445,6 +445,43 @@ class TelegramClientWrapper:
         entity = await self._resolve_entity(dialog_id=dialog_id, username=username, name=name)
         await self._client.edit_message(entity, message_id, text, parse_mode=_pm(parse_mode))
 
+    async def search(
+        self,
+        query: str,
+        dialog_id: int | None = None,
+        username: str | None = None,
+        name: str | None = None,
+        limit: int = 20,
+    ) -> list[Message]:
+        """Search messages by text, globally or within a single dialog.
+
+        Args:
+            query: Text to search for.
+            dialog_id: Numeric Telegram ID from tg_dialogs. Most reliable.
+            username: Telegram @handle (leading @ optional).
+            name: Dialog display name. Least reliable; resolved by scanning dialogs.
+            limit: Maximum number of results to return.
+
+        When none of dialog_id/username/name is given, searches across all
+        dialogs. Otherwise, restricts the search to the resolved dialog.
+
+        Raises:
+            ValueError: If a dialog selector is given but no matching dialog
+                can be found.
+        """
+        if dialog_id is None and username is None and name is None:
+            msgs = await self._client.get_messages(None, search=query, limit=limit)
+        else:
+            entity = await self._resolve_entity(dialog_id=dialog_id, username=username, name=name)
+            msgs = await self._client.get_messages(entity, search=query, limit=limit)
+        results: list[Message] = []
+        for m in msgs:
+            chat = await m.get_chat()
+            chat_id = getattr(chat, "id", None)
+            chat_name = telethon.utils.get_display_name(chat) or None if chat else None
+            results.append(await self._to_message(m, chat_id=chat_id, chat_name=chat_name))
+        return results
+
     async def _resolve_entity(
         self,
         dialog_id: int | None = None,

@@ -1312,3 +1312,107 @@ class TestEditMessage:
         """
         with pytest.raises(ValueError, match="One of dialog_id, username, or name"):
             await mock_client_wrapper.edit_message(message_id=42, text="fixed")
+
+
+# ---------------------------------------------------------------------------
+# Tests for TelegramClientWrapper.search() — real behavior (not mocked).
+#
+# Exercises the actual selector-vs-global branch, the entity resolution, and
+# the per-result chat_id/chat_name enrichment via each message's get_chat().
+# ---------------------------------------------------------------------------
+
+
+def _fake_search_message(msg_id: int, text: str, chat_id: int, chat_name: str):
+    """Build a MagicMock resembling a Telethon Message returned from a search.
+
+    Mirrors mock_telegram_message in conftest.py (id, date, text, out,
+    get_sender), plus an async get_chat() returning a REAL telethon.tl.types.User
+    instance — telethon.utils.get_display_name() does isinstance() checks
+    against telethon's own types, so a MagicMock always yields '' and can't
+    be used to prove chat_name is populated correctly.
+    """
+    from datetime import datetime, timezone
+    from telethon.tl.types import User
+
+    msg = MagicMock()
+    msg.id = msg_id
+    msg.date = datetime(2026, 7, 13, 0, 0, 0, tzinfo=timezone.utc)
+    msg.text = text
+    msg.out = False
+
+    sender = MagicMock()
+    sender.first_name = "Alice"
+    sender.last_name = None
+    sender.username = "alicesmith"
+    msg.get_sender = AsyncMock(return_value=sender)
+
+    chat = User(id=chat_id, first_name=chat_name)
+    msg.get_chat = AsyncMock(return_value=chat)
+    return msg
+
+
+class TestSearch:
+    """Tests for TelegramClientWrapper.search() (real wrapper, exercises
+    _resolve_entity and _client.get_messages with search=)."""
+
+    async def test_search_with_dialog_selector_scopes_to_entity(
+        self, mock_client_wrapper, mock_telegram_client
+    ) -> None:
+        """
+        search() with a dialog selector resolves the entity and calls
+        _client.get_messages(entity, search=query, limit=limit) — NOT a
+        global search. Each result carries chat_id/chat_name derived from
+        that message's own get_chat().
+
+        Expected: get_messages awaited once with (resolved_entity, search=query,
+        limit=limit); result[0].chat_id/chat_name match the fake message's chat.
+        """
+        mock_telegram_client.get_entity.reset_mock()
+        mock_telegram_client.get_entity.side_effect = None
+        resolved_entity = mock_telegram_client.get_entity.return_value
+
+        hit = _fake_search_message(9, "found it", chat_id=555, chat_name="Chat")
+        mock_telegram_client.get_messages.reset_mock()
+        mock_telegram_client.get_messages.side_effect = None
+        mock_telegram_client.get_messages.return_value = [hit]
+
+        result = await mock_client_wrapper.search(query="found", dialog_id=123, limit=10)
+
+        mock_telegram_client.get_messages.assert_awaited_once_with(
+            resolved_entity, search="found", limit=10
+        )
+        assert len(result) == 1
+        assert isinstance(result[0], Message)
+        assert result[0].text == "found it"
+        assert result[0].chat_id == 555
+        assert result[0].chat_name == "Chat"
+
+    async def test_search_without_selector_is_global(
+        self, mock_client_wrapper, mock_telegram_client
+    ) -> None:
+        """
+        search() with no dialog selector performs a global search: entity
+        resolution is skipped entirely and _client.get_messages() is called
+        with None as the entity.
+
+        Expected: get_messages awaited once with (None, search=query,
+        limit=limit); get_entity/iter_dialogs are never used.
+        """
+        mock_telegram_client.get_entity.reset_mock()
+        mock_telegram_client.iter_dialogs.reset_mock()
+
+        hit = _fake_search_message(1, "global hit", chat_id=777, chat_name="Somewhere")
+        mock_telegram_client.get_messages.reset_mock()
+        mock_telegram_client.get_messages.side_effect = None
+        mock_telegram_client.get_messages.return_value = [hit]
+
+        result = await mock_client_wrapper.search(query="global", limit=5)
+
+        mock_telegram_client.get_messages.assert_awaited_once_with(
+            None, search="global", limit=5
+        )
+        mock_telegram_client.get_entity.assert_not_called()
+        mock_telegram_client.iter_dialogs.assert_not_called()
+        assert len(result) == 1
+        assert result[0].chat_id == 777
+        assert result[0].chat_name == "Somewhere"
