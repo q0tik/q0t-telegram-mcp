@@ -13,7 +13,7 @@ import dataclasses
 
 import pytest
 
-from tg_mcp.models import Dialog, Message, UserInfo
+from tg_mcp.models import Button, Dialog, Message, UserInfo
 
 
 class TestUserInfo:
@@ -206,3 +206,51 @@ class TestMessage:
         )
         assert msg.text is None
         assert msg.sender is None
+
+
+class TestButton:
+    """Tests for the Button model (inline keyboard button on a bot message)."""
+
+    def test_button_serializes(self) -> None:
+        """
+        Button dataclass with text, kind, and optional url field.
+
+        Expected: dataclasses.asdict() converts Button to a dictionary
+        with all three fields: text, kind, url.
+        """
+        b = Button(text="Yes", kind="callback")
+        assert dataclasses.asdict(b) == {"text": "Yes", "kind": "callback", "url": None}
+
+
+class TestMessageExtended:
+    """Tests for extended Message fields (buttons, media, chat_id, chat_name)."""
+
+    def test_message_new_fields_default_none(self) -> None:
+        """
+        New Message fields (buttons, media, chat_id, chat_name) default to None.
+
+        Expected: constructing Message with only original required fields
+        and checking the new fields yields all None.
+        """
+        m = Message(id=1, date="2026-07-13T00:00:00+00:00", text="hi", out=False, sender="A")
+        d = dataclasses.asdict(m)
+        assert d["buttons"] is None
+        assert d["media"] is None
+        assert d["chat_id"] is None
+        assert d["chat_name"] is None
+
+    def test_message_with_buttons_serializes_nested(self) -> None:
+        """
+        Message can hold a nested list of Button objects and media field.
+
+        Expected: dataclasses.asdict() preserves nested Button dicts in buttons
+        and media field is accessible.
+        """
+        m = Message(
+            id=2, date="2026-07-13T00:00:00+00:00", text=None, out=False, sender="Bot",
+            buttons=[[Button(text="A", kind="callback"), Button(text="Docs", kind="url", url="https://x")]],
+            media="photo",
+        )
+        d = dataclasses.asdict(m)
+        assert d["buttons"][0][1]["url"] == "https://x"
+        assert d["media"] == "photo"

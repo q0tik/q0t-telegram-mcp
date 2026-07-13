@@ -36,6 +36,15 @@ class Dialog:
 
 
 @dataclass(frozen=True)
+class Button:
+    """A single inline-keyboard button on a bot message."""
+
+    text: str                 # visible label
+    kind: str                 # "callback" | "url" | "other"
+    url: str | None = None    # populated only for kind == "url"
+
+
+@dataclass(frozen=True)
 class Message:
     """A single message within a dialog.
 
@@ -47,3 +56,7 @@ class Message:
     text: str | None   # None for media-only messages
     out: bool          # True if this message was sent by the authenticated account
     sender: str | None # Display name of the sender; None for channel posts
+    buttons: "list[list[Button]] | None" = None  # rows of inline buttons; None if none
+    media: str | None = None                     # e.g. "photo", "document: report.pdf"; None for text
+    chat_id: int | None = None                   # populated only by tg_search results
+    chat_name: str | None = None                 # populated only by tg_search results
