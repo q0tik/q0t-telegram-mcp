@@ -778,3 +778,20 @@ def test_describe_media_photo_and_document_and_none():
                           audio=None, gif=None, sticker=None, document=None,
                           poll=None, contact=None, geo=None, web_preview=None)
     assert _describe_media(text) is None
+
+
+def test_describe_media_animated_gif_with_both_gif_and_video_attrs():
+    """
+    Regression test: animated GIFs in Telegram have BOTH DocumentAttributeVideo
+    and DocumentAttributeAnimated, so message.video and message.gif are both truthy.
+    _describe_media must return "gif", not "video".
+
+    This test constructs a fake message with both gif=True and video=True,
+    simulating an animated GIF, and asserts that the result is "gif".
+    """
+    animated_gif = SimpleNamespace(
+        photo=None, voice=None, video_note=None, video=True,
+        audio=None, gif=True, sticker=None, document=None,
+        poll=None, contact=None, geo=None, web_preview=None
+    )
+    assert _describe_media(animated_gif) == "gif"

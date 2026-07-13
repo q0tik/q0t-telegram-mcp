@@ -38,12 +38,12 @@ def _describe_media(message) -> "str | None":
         return "voice"
     if getattr(message, "video_note", None):
         return "video_note"
+    if getattr(message, "gif", None):
+        return "gif"
     if getattr(message, "video", None):
         return "video"
     if getattr(message, "audio", None):
         return "audio"
-    if getattr(message, "gif", None):
-        return "gif"
     if getattr(message, "sticker", None):
         return "sticker"
     document = getattr(message, "document", None)
