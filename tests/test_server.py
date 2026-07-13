@@ -409,7 +409,7 @@ class TestTgSend:
         ctx = _make_ctx(client)
         await tg_send(ctx, name="Alice", text="Hello")
         client.send_message.assert_called_once_with(
-            text="Hello", dialog_id=None, username=None, name="Alice"
+            text="Hello", dialog_id=None, username=None, name="Alice", reply_to=None, parse_mode="markdown"
         )
 
     async def test_tg_send_parameter_is_named_name(
@@ -454,6 +454,14 @@ class TestTgSend:
         assert isinstance(result, dict)
         assert "error" in result
         assert "Alice" in result["error"]
+
+    async def test_tg_send_passes_reply_to_and_parse_mode(self, mock_client_wrapper) -> None:
+        client = _make_mock_client()
+        ctx = _make_ctx(client)
+        await tg_send(ctx, text="Hi", dialog_id=5, reply_to=42, parse_mode="html")
+        client.send_message.assert_called_once_with(
+            text="Hi", dialog_id=5, username=None, name=None, reply_to=42, parse_mode="html"
+        )
 
 
 class TestTgSendFile:
@@ -626,7 +634,7 @@ class TestTgSendDisambiguation:
         result = await tg_send(ctx, text="Hi", dialog_id=123)
         assert result == {"ok": True}
         client.send_message.assert_called_once_with(
-            text="Hi", dialog_id=123, username=None, name=None
+            text="Hi", dialog_id=123, username=None, name=None, reply_to=None, parse_mode="markdown"
         )
 
     async def test_tg_send_with_username_only_no_at(self, mock_client_wrapper) -> None:
@@ -640,7 +648,7 @@ class TestTgSendDisambiguation:
         result = await tg_send(ctx, text="Hi", username="alicesmith")
         assert result == {"ok": True}
         client.send_message.assert_called_once_with(
-            text="Hi", dialog_id=None, username="alicesmith", name=None
+            text="Hi", dialog_id=None, username="alicesmith", name=None, reply_to=None, parse_mode="markdown"
         )
 
     async def test_tg_send_with_username_only_with_at(self, mock_client_wrapper) -> None:
@@ -655,7 +663,7 @@ class TestTgSendDisambiguation:
         result = await tg_send(ctx, text="Hi", username="@alicesmith")
         assert result == {"ok": True}
         client.send_message.assert_called_once_with(
-            text="Hi", dialog_id=None, username="@alicesmith", name=None
+            text="Hi", dialog_id=None, username="@alicesmith", name=None, reply_to=None, parse_mode="markdown"
         )
 
     async def test_tg_send_with_name_only(self, mock_client_wrapper) -> None:
@@ -669,7 +677,7 @@ class TestTgSendDisambiguation:
         result = await tg_send(ctx, text="Hi", name="Alice")
         assert result == {"ok": True}
         client.send_message.assert_called_once_with(
-            text="Hi", dialog_id=None, username=None, name="Alice"
+            text="Hi", dialog_id=None, username=None, name="Alice", reply_to=None, parse_mode="markdown"
         )
 
     async def test_tg_send_no_selector_raises_value_error(self, mock_client_wrapper) -> None:
@@ -699,7 +707,7 @@ class TestTgSendDisambiguation:
         ctx = _make_ctx(client)
         await tg_send(ctx, text="Hi", dialog_id=99, username="alice")
         client.send_message.assert_called_once_with(
-            text="Hi", dialog_id=99, username="alice", name=None
+            text="Hi", dialog_id=99, username="alice", name=None, reply_to=None, parse_mode="markdown"
         )
 
     async def test_tg_send_username_takes_priority_over_name(
@@ -715,7 +723,7 @@ class TestTgSendDisambiguation:
         ctx = _make_ctx(client)
         await tg_send(ctx, text="Hi", username="alice", name="Alice")
         client.send_message.assert_called_once_with(
-            text="Hi", dialog_id=None, username="alice", name="Alice"
+            text="Hi", dialog_id=None, username="alice", name="Alice", reply_to=None, parse_mode="markdown"
         )
 
 

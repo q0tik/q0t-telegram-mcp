@@ -30,6 +30,18 @@ def _extract_buttons(message) -> "list[list[Button]] | None":
     return result
 
 
+def _pm(parse_mode: str | None) -> str | None:
+    """Normalize a public parse_mode value to what Telethon expects."""
+    if parse_mode is None:
+        return "md"
+    p = parse_mode.strip().lower()
+    if p in ("none", "plain", ""):
+        return None
+    if p == "html":
+        return "html"
+    return "md"  # markdown / md / anything else
+
+
 def _describe_media(message) -> "str | None":
     """Return a short human-readable descriptor of a message's media, or None."""
     if getattr(message, "photo", None):
@@ -199,6 +211,8 @@ class TelegramClientWrapper:
         dialog_id: int | None = None,
         username: str | None = None,
         name: str | None = None,
+        reply_to: int | None = None,
+        parse_mode: str | None = "markdown",
     ) -> None:
         """Send a text message to a dialog.
 
@@ -207,12 +221,14 @@ class TelegramClientWrapper:
             dialog_id: Numeric Telegram ID from tg_dialogs. Most reliable.
             username: Telegram @handle (leading @ optional).
             name: Dialog display name. Least reliable; resolved by scanning dialogs.
+            reply_to: Message ID to reply to.
+            parse_mode: Text formatting: "markdown" (default), "html", or "none".
 
         Raises:
             ValueError: If no dialog matching the provided selector can be found.
         """
         entity = await self._resolve_entity(dialog_id=dialog_id, username=username, name=name)
-        await self._client.send_message(entity, text)
+        await self._client.send_message(entity, text, reply_to=reply_to, parse_mode=_pm(parse_mode))
 
     async def send_file(
         self,
