@@ -1416,3 +1416,96 @@ class TestSearch:
         assert len(result) == 1
         assert result[0].chat_id == 777
         assert result[0].chat_name == "Somewhere"
+
+
+class TestDownloadMedia:
+    """Tests for TelegramClientWrapper.download_media() (real wrapper, not mocked).
+
+    _client.download_media itself is mocked (it would perform a real network
+    download otherwise), and os.path.getsize is patched so no real file is
+    touched. dest_dir is always an explicit tmp_path so no stray directories
+    are created in the repo working tree.
+    """
+
+    async def test_download_media_with_media_returns_dict(
+        self, mock_client_wrapper, mock_telegram_client, tmp_path
+    ) -> None:
+        """
+        download_media() resolves the entity, fetches the single message via
+        _client.get_messages(entity, ids=message_id), and — since the message
+        has media — calls _client.download_media(message, file=str(dest)).
+        The returned dict has the resolved absolute path, the media
+        descriptor from _describe_media, and the (mocked) file size.
+
+        Expected: get_messages awaited with (resolved_entity, ids=7);
+        download_media awaited with (msg, file=dest_dir); result == the
+        resolved path / "photo" / 1234.
+        """
+        mock_telegram_client.get_entity.reset_mock()
+        mock_telegram_client.get_entity.side_effect = None
+        resolved_entity = mock_telegram_client.get_entity.return_value
+
+        msg = MagicMock()
+        msg.photo = MagicMock()
+        msg.media = msg.photo
+        msg.voice = None
+        msg.video_note = None
+        msg.gif = None
+        msg.video = None
+        msg.audio = None
+        msg.sticker = None
+        msg.document = None
+        msg.poll = None
+        msg.contact = None
+        msg.geo = None
+        msg.web_preview = None
+
+        mock_telegram_client.get_messages.reset_mock()
+        mock_telegram_client.get_messages.side_effect = None
+        mock_telegram_client.get_messages.return_value = msg
+
+        dest_dir = str(tmp_path / "downloads")
+        fake_path = str(tmp_path / "downloads" / "photo.jpg")
+        mock_telegram_client.download_media = AsyncMock(return_value=fake_path)
+
+        with patch("tg_mcp.client.os.path.getsize", return_value=1234) as mock_getsize:
+            result = await mock_client_wrapper.download_media(
+                dialog_id=123, message_id=7, dest_dir=dest_dir
+            )
+
+        mock_telegram_client.get_messages.assert_awaited_once_with(resolved_entity, ids=7)
+        mock_telegram_client.download_media.assert_awaited_once_with(msg, file=dest_dir)
+        mock_getsize.assert_called_once_with(fake_path)
+        assert result == {
+            "path": str(Path(fake_path).resolve()),
+            "media": "photo",
+            "size": 1234,
+        }
+
+    async def test_download_media_no_media_raises_value_error(
+        self, mock_client_wrapper, mock_telegram_client, tmp_path
+    ) -> None:
+        """
+        When the fetched message has no media (message.media is falsy),
+        download_media() must raise ValueError mentioning "no downloadable
+        media" and must NEVER call _client.download_media.
+        """
+        mock_telegram_client.get_entity.reset_mock()
+        mock_telegram_client.get_entity.side_effect = None
+
+        msg = MagicMock()
+        msg.media = None
+
+        mock_telegram_client.get_messages.reset_mock()
+        mock_telegram_client.get_messages.side_effect = None
+        mock_telegram_client.get_messages.return_value = msg
+
+        mock_telegram_client.download_media = AsyncMock()
+
+        dest_dir = str(tmp_path / "downloads")
+
+        with pytest.raises(ValueError, match="Message 7 has no downloadable media"):
+            await mock_client_wrapper.download_media(
+                dialog_id=123, message_id=7, dest_dir=dest_dir
+            )
+        mock_telegram_client.download_media.assert_not_awaited()

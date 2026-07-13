@@ -22,7 +22,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock
 
 from tg_mcp.models import Dialog, Message, UserInfo
-from tg_mcp.server import tg_me, tg_dialogs, tg_dialog, tg_send, tg_send_file, tg_forward, tg_read, tg_click, tg_react, tg_delete, tg_edit, tg_search
+from tg_mcp.server import tg_me, tg_dialogs, tg_dialog, tg_send, tg_send_file, tg_forward, tg_read, tg_click, tg_react, tg_delete, tg_edit, tg_search, tg_download
 
 
 # ---------------------------------------------------------------------------
@@ -1012,3 +1012,23 @@ class TestTgSearch:
         ctx = _make_ctx(client)
         result = await tg_search(ctx, query="x", name="X")
         assert isinstance(result, list) and "error" in result[0]
+
+
+class TestTgDownload:
+    async def test_tg_download_returns_path(self, mock_client_wrapper) -> None:
+        client = _make_mock_client()
+        client.download_media = AsyncMock(return_value={"path": "/tmp/x/photo.jpg", "media": "photo", "size": 1234})
+        ctx = _make_ctx(client)
+        result = await tg_download(ctx, dialog_id=1, message_id=7)
+        assert result["path"] == "/tmp/x/photo.jpg"
+        assert result["size"] == 1234
+        client.download_media.assert_called_once_with(
+            dialog_id=1, username=None, name=None, message_id=7, dest_dir=None
+        )
+
+    async def test_tg_download_no_media_error(self, mock_client_wrapper) -> None:
+        client = _make_mock_client()
+        client.download_media = AsyncMock(side_effect=ValueError("Message 7 has no downloadable media"))
+        ctx = _make_ctx(client)
+        result = await tg_download(ctx, dialog_id=1, message_id=7)
+        assert "error" in result and "no downloadable media" in result["error"]

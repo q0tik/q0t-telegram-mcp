@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+from pathlib import Path
 from typing import Any
 
 import telethon.utils
@@ -481,6 +483,41 @@ class TelegramClientWrapper:
             chat_name = telethon.utils.get_display_name(chat) or None if chat else None
             results.append(await self._to_message(m, chat_id=chat_id, chat_name=chat_name))
         return results
+
+    async def download_media(
+        self,
+        dialog_id: int | None = None,
+        username: str | None = None,
+        name: str | None = None,
+        message_id: int = 0,
+        dest_dir: str | None = None,
+    ) -> dict:
+        """Download a message's media (photo/voice/document/…) to disk.
+
+        Args:
+            dialog_id: Numeric Telegram ID from tg_dialogs. Most reliable.
+            username: Telegram @handle (leading @ optional).
+            name: Dialog display name. Least reliable; resolved by scanning dialogs.
+            message_id: ID of the message whose media to download.
+            dest_dir: Directory to save into. Defaults to <cwd>/.telegram-mcp/downloads/.
+
+        Returns:
+            {"path": str | None, "media": str | None, "size": int}
+
+        Raises:
+            ValueError: If no dialog matching the provided selector can be found,
+                or the message has no downloadable media.
+        """
+        entity = await self._resolve_entity(dialog_id=dialog_id, username=username, name=name)
+        message = await self._client.get_messages(entity, ids=message_id)
+        if message is None or not getattr(message, "media", None):
+            raise ValueError(f"Message {message_id} has no downloadable media")
+        dest = Path(dest_dir) if dest_dir else (Path.cwd() / ".telegram-mcp" / "downloads")
+        dest.mkdir(parents=True, exist_ok=True)
+        path = await self._client.download_media(message, file=str(dest))
+        size = os.path.getsize(path) if path else 0
+        return {"path": str(Path(path).resolve()) if path else None,
+                "media": _describe_media(message), "size": size}
 
     async def _resolve_entity(
         self,

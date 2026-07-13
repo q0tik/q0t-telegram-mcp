@@ -315,6 +315,26 @@ async def tg_search(
         return [{"error": _error_message(e)}]
 
 
+@mcp.tool()
+async def tg_download(
+    ctx: Context,
+    message_id: Annotated[int, Field(description="ID of the message whose media to download.")],
+    dialog_id: Annotated[Optional[int], Field(description="Numeric ID from tg_dialogs."), WithJsonSchema({"type": "integer", "description": "Numeric ID from tg_dialogs."})] = None,
+    username: Annotated[Optional[str], Field(description="Telegram @handle."), WithJsonSchema({"type": "string", "description": "Telegram @handle."})] = None,
+    name: Annotated[Optional[str], Field(description="Display name."), WithJsonSchema({"type": "string", "description": "Display name."})] = None,
+    dest_dir: Annotated[Optional[str], Field(description="Directory to save into. Defaults to <cwd>/.telegram-mcp/downloads/."), WithJsonSchema({"type": "string", "description": "Directory to save into. Defaults to <cwd>/.telegram-mcp/downloads/."})] = None,
+) -> dict:
+    """Download a message's media (photo/voice/document/…) to disk. Returns the saved path, media type, and size. Supply exactly one of dialog_id, username, or name."""
+    if dialog_id is None and username is None and name is None:
+        raise ValueError("One of dialog_id, username, or name must be provided")
+    client: TelegramClientWrapper = ctx.request_context.lifespan_context.client
+    try:
+        return await client.download_media(dialog_id=dialog_id, username=username, name=name,
+                                          message_id=message_id, dest_dir=dest_dir)
+    except Exception as e:
+        return {"error": _error_message(e)}
+
+
 def run_server() -> None:
     """Start the MCP server. Blocks until the server is stopped."""
     mcp.run()
