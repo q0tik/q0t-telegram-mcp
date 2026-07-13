@@ -1188,3 +1188,40 @@ class TestClickButton:
         msg.click.assert_awaited_once_with(1, 0)
         assert result["answer"] is None
         assert result["alert"] is False
+
+
+class TestDelete:
+    """Tests for TelegramClientWrapper.delete()."""
+
+    async def test_delete_list_of_ids_returns_count(
+        self, mock_client_wrapper, mock_telegram_client
+    ) -> None:
+        """
+        delete() with a list of message IDs calls _client.delete_messages(entity, ids, revoke=True)
+        and returns the count of messages to delete.
+
+        Expected: _client.delete_messages is called once with the entity, the message IDs,
+        and revoke=True. The return value is the count of IDs (2 in this case).
+        """
+        mock_telegram_client.delete_messages.return_value = None
+        result = await mock_client_wrapper.delete(name="Alice", message_ids=[7, 8])
+        assert result == 2
+        mock_telegram_client.delete_messages.assert_called_once()
+        call_args = mock_telegram_client.delete_messages.call_args
+        # Second positional arg (or kwarg) should be the IDs list
+        assert [7, 8] in call_args.args or call_args.kwargs.get("message_ids") == [7, 8]
+
+    async def test_delete_forwards_revoke_false(
+        self, mock_client_wrapper, mock_telegram_client
+    ) -> None:
+        """
+        delete() with revoke=False forwards that parameter to _client.delete_messages().
+
+        Expected: _client.delete_messages() is called with revoke=False in kwargs.
+        """
+        mock_telegram_client.delete_messages.return_value = None
+        result = await mock_client_wrapper.delete(name="Alice", message_ids=[5], revoke=False)
+        assert result == 1
+        mock_telegram_client.delete_messages.assert_called_once()
+        call_kwargs = mock_telegram_client.delete_messages.call_args.kwargs
+        assert call_kwargs.get("revoke") is False

@@ -22,7 +22,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock
 
 from tg_mcp.models import Dialog, Message, UserInfo
-from tg_mcp.server import tg_me, tg_dialogs, tg_dialog, tg_send, tg_send_file, tg_forward, tg_read, tg_click, tg_react
+from tg_mcp.server import tg_me, tg_dialogs, tg_dialog, tg_send, tg_send_file, tg_forward, tg_read, tg_click, tg_react, tg_delete
 
 
 # ---------------------------------------------------------------------------
@@ -953,3 +953,21 @@ class TestTgReact:
         ctx = _make_ctx(client)
         with pytest.raises(ValueError, match="One of dialog_id, username, or name"):
             await tg_react(ctx, message_id=7, emoji="👍")
+
+
+class TestTgDelete:
+    async def test_tg_delete_passes_ids_and_returns_count(self, mock_client_wrapper) -> None:
+        client = _make_mock_client()
+        client.delete = AsyncMock(return_value=2)
+        ctx = _make_ctx(client)
+        result = await tg_delete(ctx, dialog_id=1, message_ids=[7, 8])
+        assert result == {"ok": True, "deleted": 2}
+        client.delete.assert_called_once_with(
+            dialog_id=1, username=None, name=None, message_ids=[7, 8], revoke=True
+        )
+
+    async def test_tg_delete_no_selector_raises(self, mock_client_wrapper) -> None:
+        client = _make_mock_client()
+        ctx = _make_ctx(client)
+        with pytest.raises(ValueError, match="One of dialog_id, username, or name"):
+            await tg_delete(ctx, message_ids=[7])

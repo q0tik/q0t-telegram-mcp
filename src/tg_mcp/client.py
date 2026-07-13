@@ -392,6 +392,34 @@ class TelegramClientWrapper:
             "message": await self._to_message(updated) if updated else None,
         }
 
+    async def delete(
+        self,
+        dialog_id: int | None = None,
+        username: str | None = None,
+        name: str | None = None,
+        message_ids: list[int] | None = None,
+        revoke: bool = True,
+    ) -> int:
+        """Delete one or more messages from a dialog.
+
+        Args:
+            dialog_id: Numeric Telegram ID from tg_dialogs. Most reliable.
+            username: Telegram @handle (leading @ optional).
+            name: Dialog display name. Least reliable; resolved by scanning dialogs.
+            message_ids: List of message IDs to delete.
+            revoke: Delete for everyone (default) or just for self (False).
+
+        Returns:
+            The number of messages deleted.
+
+        Raises:
+            ValueError: If no dialog matching the provided selector can be found.
+        """
+        entity = await self._resolve_entity(dialog_id=dialog_id, username=username, name=name)
+        ids = message_ids or []
+        await self._client.delete_messages(entity, ids, revoke=revoke)
+        return len(ids)
+
     async def _resolve_entity(
         self,
         dialog_id: int | None = None,

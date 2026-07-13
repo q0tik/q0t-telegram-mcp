@@ -254,6 +254,27 @@ async def tg_react(
         return {"error": _error_message(e)}
 
 
+@mcp.tool()
+async def tg_delete(
+    ctx: Context,
+    message_ids: Annotated[list[int], Field(description="IDs of messages to delete.")],
+    dialog_id: Annotated[Optional[int], Field(description="Numeric ID from tg_dialogs."), WithJsonSchema({"type": "integer", "description": "Numeric ID from tg_dialogs."})] = None,
+    username: Annotated[Optional[str], Field(description="Telegram @handle."), WithJsonSchema({"type": "string", "description": "Telegram @handle."})] = None,
+    name: Annotated[Optional[str], Field(description="Display name."), WithJsonSchema({"type": "string", "description": "Display name."})] = None,
+    revoke: Annotated[bool, Field(description="Delete for everyone (default). False deletes only for you.")] = True,
+) -> dict:
+    """Delete one or more messages from a dialog. Supply exactly one of dialog_id, username, or name."""
+    if dialog_id is None and username is None and name is None:
+        raise ValueError("One of dialog_id, username, or name must be provided")
+    client: TelegramClientWrapper = ctx.request_context.lifespan_context.client
+    try:
+        deleted = await client.delete(dialog_id=dialog_id, username=username, name=name,
+                                     message_ids=message_ids, revoke=revoke)
+        return {"ok": True, "deleted": deleted}
+    except Exception as e:
+        return {"error": _error_message(e)}
+
+
 def run_server() -> None:
     """Start the MCP server. Blocks until the server is stopped."""
     mcp.run()

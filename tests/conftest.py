@@ -222,6 +222,9 @@ def mock_telegram_client(
     # Message forwarding
     client.forward_messages.return_value = [MagicMock()]
 
+    # Message deletion
+    client.delete_messages.return_value = None
+
     # Explicitly make draft-related methods raise so any accidental call is caught.
     # Tests for send_message will assert these are never called.
     client.MessagesSaveDraft = MagicMock(side_effect=AssertionError("MUST NOT call SaveDraft"))
