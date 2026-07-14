@@ -23,11 +23,22 @@ This project fixes both and builds a reliable, well-tested replacement.
 | `tg_forward` | `message_id` (int); one source `from_*` selector; one destination `to_*` selector | `{"ok": true}` | Forward a message from one dialog to another |
 | `tg_read` | `dialog_id` (int), `username` (str), or `name` (str) — at least one required | `{"ok": true}` | Mark all messages in a dialog as read |
 | `tg_click` | dialog selector; `message_id` (int); `text` (str, button label); `row`/`col` (int, optional) | `{answer, alert, message, url?}` | Press an inline keyboard button on a bot message; returns the callback answer and the (usually edited) message |
-| `tg_react` | dialog selector; `message_id` (int); `emoji` (str); `big` (bool, default `false`); `remove` (bool, default `false`) | `{"ok": true}` | React to a message with an emoji (or remove the reaction) |
+| `tg_react` | dialog selector; `message_id` (int); `emoji` (str); `big` (bool, default `false`); `remove` (bool, default `false`) | `{"ok": true}` | React to a message with an emoji (or remove the reaction). Verify the result by reading `reactions` from `tg_dialog`. |
 | `tg_edit` | dialog selector; `message_id` (int); `text` (str); `parse_mode` (`markdown` default, `html`, `none`) | `{"ok": true}` | Edit one of your own sent messages |
 | `tg_delete` | dialog selector; `message_ids` (list[int]); `revoke` (bool, default `true`) | `{"ok": true, "deleted": n}` | Delete one or more messages |
 | `tg_search` | `query` (str); dialog selector (optional — omit for a global search); `limit` (int, default `20`) | List of messages (each with `chat_id`/`chat_name`) | Search messages by text, per-dialog or globally |
 | `tg_download` | dialog selector; `message_id` (int); `dest_dir` (str, optional) | `{path, media, size}` | Download a message's media (photo/voice/document/…) to disk |
+
+### Reactions
+
+Messages returned by `tg_dialog` carry a `reactions` field: a list of `{kind, count, chosen, emoji, custom_emoji_id}`, or `null` when nobody has reacted. `chosen` is `true` for the reaction *you* left, which is what makes a `tg_react` call verifiable rather than merely "returned ok".
+
+| `kind` | Meaning |
+|--------|---------|
+| `emoji` | Standard unicode reaction — `emoji` holds it |
+| `custom` | Custom emoji reaction — `custom_emoji_id` holds the document id |
+| `paid` | Paid (star) reaction |
+| `other` | Unrecognised reaction type |
 
 ### Buttons and what `tg_click` can press
 

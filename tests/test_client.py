@@ -1624,3 +1624,120 @@ class TestMessageReplyTo:
         mock_telegram_message.buttons = None
         out = await mock_client_wrapper._to_message(mock_telegram_message)
         assert out.reply_to is None
+
+
+class TestExtractReactions:
+    """Tests for _extract_reactions().
+
+    Closes the blind spot found during live testing: tg_react returned ok but
+    there was no way to observe whether a reaction actually landed, because the
+    Message model carried no reactions field.
+    """
+
+    @staticmethod
+    def _msg(results):
+        msg = MagicMock()
+        reactions = MagicMock()
+        reactions.results = results
+        msg.reactions = reactions
+        return msg
+
+    @staticmethod
+    def _count(reaction, count, chosen_order=None):
+        from telethon.tl.types import ReactionCount
+
+        return ReactionCount(reaction=reaction, count=count, chosen_order=chosen_order)
+
+    def test_no_reactions_returns_none(self) -> None:
+        from tg_mcp.client import _extract_reactions
+
+        msg = MagicMock()
+        msg.reactions = None
+        assert _extract_reactions(msg) is None
+
+    def test_empty_results_returns_none(self) -> None:
+        from tg_mcp.client import _extract_reactions
+
+        assert _extract_reactions(self._msg([])) is None
+
+    def test_emoji_reaction_maps_emoji_and_count(self) -> None:
+        from telethon.tl.types import ReactionEmoji
+        from tg_mcp.client import _extract_reactions
+
+        out = _extract_reactions(self._msg([self._count(ReactionEmoji(emoticon="\U0001F44D"), 3)]))
+        assert len(out) == 1
+        assert out[0].emoji == "\U0001F44D"
+        assert out[0].count == 3
+        assert out[0].kind == "emoji"
+
+    def test_chosen_order_none_means_not_chosen_by_me(self) -> None:
+        from telethon.tl.types import ReactionEmoji
+        from tg_mcp.client import _extract_reactions
+
+        out = _extract_reactions(self._msg([self._count(ReactionEmoji(emoticon="\U0001F44D"), 3, None)]))
+        assert out[0].chosen is False
+
+    def test_chosen_order_zero_means_chosen_by_me(self) -> None:
+        """chosen_order is an index, so 0 is truthy-in-meaning but falsy in Python.
+
+        A naive bool(chosen_order) would report the account's own first reaction
+        as not chosen.
+        """
+        from telethon.tl.types import ReactionEmoji
+        from tg_mcp.client import _extract_reactions
+
+        out = _extract_reactions(self._msg([self._count(ReactionEmoji(emoticon="\U0001F44D"), 1, 0)]))
+        assert out[0].chosen is True
+
+    def test_custom_emoji_reaction_carries_document_id(self) -> None:
+        from telethon.tl.types import ReactionCustomEmoji
+        from tg_mcp.client import _extract_reactions
+
+        out = _extract_reactions(self._msg([self._count(ReactionCustomEmoji(document_id=555), 2)]))
+        assert out[0].kind == "custom"
+        assert out[0].custom_emoji_id == 555
+        assert out[0].emoji is None
+
+    def test_paid_reaction_is_labelled(self) -> None:
+        from telethon.tl.types import ReactionPaid
+        from tg_mcp.client import _extract_reactions
+
+        out = _extract_reactions(self._msg([self._count(ReactionPaid(), 7)]))
+        assert out[0].kind == "paid"
+        assert out[0].count == 7
+
+    def test_multiple_reactions_preserve_order(self) -> None:
+        from telethon.tl.types import ReactionEmoji
+        from tg_mcp.client import _extract_reactions
+
+        out = _extract_reactions(self._msg([
+            self._count(ReactionEmoji(emoticon="\U0001F44D"), 5),
+            self._count(ReactionEmoji(emoticon="\U0001F525"), 2, 0),
+        ]))
+        assert [r.emoji for r in out] == ["\U0001F44D", "\U0001F525"]
+        assert [r.chosen for r in out] == [False, True]
+
+
+class TestMessageReactionsField:
+    """_to_message() surfaces reactions so tg_react can actually be verified."""
+
+    async def test_to_message_populates_reactions(
+        self, mock_client_wrapper, mock_telegram_message
+    ) -> None:
+        from telethon.tl.types import ReactionCount, ReactionEmoji
+
+        reactions = MagicMock()
+        reactions.results = [ReactionCount(reaction=ReactionEmoji(emoticon="\U0001F44D"), count=1, chosen_order=0)]
+        mock_telegram_message.reactions = reactions
+        mock_telegram_message.buttons = None
+        out = await mock_client_wrapper._to_message(mock_telegram_message)
+        assert out.reactions[0].emoji == "\U0001F44D"
+        assert out.reactions[0].chosen is True
+
+    async def test_to_message_reactions_none_when_absent(
+        self, mock_client_wrapper, mock_telegram_message
+    ) -> None:
+        mock_telegram_message.reactions = None
+        mock_telegram_message.buttons = None
+        out = await mock_client_wrapper._to_message(mock_telegram_message)
+        assert out.reactions is None

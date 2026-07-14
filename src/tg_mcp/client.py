@@ -12,7 +12,7 @@ from telethon.tl.functions.messages import SendReactionRequest
 from telethon.tl.types import ReactionEmoji
 
 from .config import Config
-from .models import Button, Dialog, Message, UserInfo
+from .models import Button, Dialog, Message, Reaction, UserInfo
 
 
 def _classify_button(b) -> Button:
@@ -48,6 +48,31 @@ def _extract_buttons(message) -> "list[list[Button]] | None":
     if not rows:
         return None
     return [[_classify_button(b) for b in row] for row in rows]
+
+
+def _extract_reactions(message) -> "list[Reaction] | None":
+    """Map a Telethon message's reactions to Reaction buckets, newest API shapes included."""
+    reactions = getattr(message, "reactions", None)
+    results = getattr(reactions, "results", None) if reactions else None
+    if not results:
+        return None
+    out: list[Reaction] = []
+    for rc in results:
+        # chosen_order is an index, so 0 means "my first reaction" — check for
+        # None explicitly rather than truthiness.
+        chosen = getattr(rc, "chosen_order", None) is not None
+        r = rc.reaction
+        if isinstance(r, types.ReactionEmoji):
+            out.append(Reaction(kind="emoji", count=rc.count, chosen=chosen, emoji=r.emoticon))
+        elif isinstance(r, types.ReactionCustomEmoji):
+            out.append(
+                Reaction(kind="custom", count=rc.count, chosen=chosen, custom_emoji_id=r.document_id)
+            )
+        elif isinstance(r, types.ReactionPaid):
+            out.append(Reaction(kind="paid", count=rc.count, chosen=chosen))
+        else:
+            out.append(Reaction(kind="other", count=rc.count, chosen=chosen))
+    return out
 
 
 def _pm(parse_mode: str | None) -> str | None:
@@ -200,6 +225,7 @@ class TelegramClientWrapper:
             chat_id=chat_id,
             chat_name=chat_name,
             reply_to=getattr(m, "reply_to_msg_id", None),
+            reactions=_extract_reactions(m),
         )
 
     async def get_messages(

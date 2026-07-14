@@ -45,6 +45,17 @@ class Button:
 
 
 @dataclass(frozen=True)
+class Reaction:
+    """One reaction bucket on a message: which reaction, how many, and whether it's mine."""
+
+    kind: str                        # "emoji" | "custom" | "paid" | "other"
+    count: int
+    chosen: bool                     # True if the authenticated account reacted with this
+    emoji: str | None = None         # populated for kind == "emoji"
+    custom_emoji_id: int | None = None  # populated for kind == "custom"
+
+
+@dataclass(frozen=True)
 class Message:
     """A single message within a dialog.
 
@@ -61,3 +72,4 @@ class Message:
     chat_id: int | None = None                   # populated only by tg_search results
     chat_name: str | None = None                 # populated only by tg_search results
     reply_to: int | None = None                  # ID of the message this one replies to
+    reactions: "list[Reaction] | None" = None    # reaction buckets; None if nobody reacted
