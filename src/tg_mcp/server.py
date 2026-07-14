@@ -121,8 +121,8 @@ async def tg_send(
         raise ValueError("One of dialog_id, username, or name must be provided")
     client: TelegramClientWrapper = ctx.request_context.lifespan_context.client
     try:
-        await client.send_message(text=text, dialog_id=dialog_id, username=username, name=name, reply_to=reply_to, parse_mode=parse_mode)
-        return {"ok": True}
+        message_id = await client.send_message(text=text, dialog_id=dialog_id, username=username, name=name, reply_to=reply_to, parse_mode=parse_mode)
+        return {"ok": True, "message_id": message_id}
     except Exception as e:
         return {"error": _error_message(e)}
 
@@ -141,14 +141,14 @@ async def tg_send_file(
         raise ValueError("One of dialog_id, username, or name must be provided")
     client: TelegramClientWrapper = ctx.request_context.lifespan_context.client
     try:
-        await client.send_file(
+        message_id = await client.send_file(
             file_path=file_path,
             dialog_id=dialog_id,
             username=username,
             name=name,
             caption=caption,
         )
-        return {"ok": True}
+        return {"ok": True, "message_id": message_id}
     except Exception as e:
         return {"error": _error_message(e)}
 

@@ -27,6 +27,8 @@ try:
 except ImportError:
     TelegramClientWrapper = None  # type: ignore[assignment,misc]
 
+from telethon import TelegramClient
+
 
 # ---------------------------------------------------------------------------
 # Config fixture
@@ -166,15 +168,24 @@ def mock_telegram_client(
       - send_code_request()       -> mock with .phone_code_hash
       - sign_in()                 -> mock_telegram_user
 
-    Draft-related attributes are explicitly absent / set to raise AttributeError
-    so tests can assert they are never called.
+    The mock is spec_set against the real telethon.TelegramClient: reading OR
+    assigning an attribute Telethon does not actually have raises AttributeError.
+    This is load-bearing. A bare AsyncMock() invents any attribute you touch, so
+    a test could mock (and pass against) a method that does not exist — which is
+    exactly how a broken tg_react shipped with a green suite. Draft methods need
+    no explicit trap any more: SaveDraft is not on TelegramClient, so spec_set
+    makes touching it an error by construction.
     """
-    client = AsyncMock()
+    client = AsyncMock(spec_set=TelegramClient)
 
     # Auth / lifecycle
     client.is_user_authorized.return_value = True
     client.connect.return_value = None
-    client.disconnect.return_value = None
+    # Telethon declares disconnect() as a plain def but returns an awaitable
+    # Future whenever a loop is running, so `await client.disconnect()` is correct
+    # against the real client. spec_set only sees the non-async signature and would
+    # hand back a sync mock, so make the awaitable-ness explicit here.
+    client.disconnect = AsyncMock(return_value=None)
 
     # Account info
     client.get_me.return_value = mock_telegram_user
@@ -224,11 +235,6 @@ def mock_telegram_client(
 
     # Message deletion
     client.delete_messages.return_value = None
-
-    # Explicitly make draft-related methods raise so any accidental call is caught.
-    # Tests for send_message will assert these are never called.
-    client.MessagesSaveDraft = MagicMock(side_effect=AssertionError("MUST NOT call SaveDraft"))
-    client.draft = MagicMock(side_effect=AssertionError("MUST NOT access .draft"))
 
     return client
 

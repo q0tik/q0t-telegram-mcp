@@ -18,6 +18,8 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from telethon.tl.functions.messages import SendReactionRequest
+
 import pytest
 
 from tg_mcp.client import TelegramClientWrapper, _pm
@@ -953,119 +955,99 @@ def _fake_click_message(buttons, msg_id: int = 42, text: str = "msg text"):
 
 
 class TestReact:
-    """Tests for TelegramClientWrapper.react() (real wrapper, exercises _resolve_entity and _client.send_reaction)."""
+    """Tests for TelegramClientWrapper.react().
 
-    async def test_react_calls_send_reaction_with_emoji(
+    These assert against the REAL Telethon surface: there is no
+    TelegramClient.send_reaction, so reactions must go out as a raw
+    SendReactionRequest. The mock_telegram_client fixture is spec_set against
+    the real client, which is what stops these tests from passing against an
+    API that does not exist.
+    """
+
+    async def test_client_has_no_send_reaction_method(self) -> None:
+        """Regression: guards the bug that shipped a fully broken tg_react in 0.5.0.
+
+        The old implementation called self._client.send_reaction(...), which raised
+        AttributeError against every real Telethon build. The unit suite was green
+        because the mock invented the method on assignment.
+        """
+        from telethon import TelegramClient
+
+        assert not hasattr(TelegramClient, "send_reaction")
+
+    async def test_react_sends_reaction_request_with_emoji(
         self, mock_client_wrapper, mock_telegram_client
     ) -> None:
-        """
-        react() with remove=False calls _client.send_reaction(entity, message_id, reaction=emoji, big=big).
+        """react() with remove=False sends SendReactionRequest with one ReactionEmoji."""
+        await mock_client_wrapper.react(name="Alice", message_id=42, emoji="\U0001F44D", big=False, remove=False)
+        mock_telegram_client.assert_awaited_once()
+        req = mock_telegram_client.call_args.args[0]
+        assert isinstance(req, SendReactionRequest)
+        assert req.msg_id == 42
+        assert [r.emoticon for r in req.reaction] == ["\U0001F44D"]
+        assert req.big is False
 
-        Expected: send_reaction is awaited once with reaction set to the emoji string.
-        """
-        mock_telegram_client.send_reaction = AsyncMock(return_value=None)
-        await mock_client_wrapper.react(name="Alice", message_id=42, emoji="👍", big=False, remove=False)
-        mock_telegram_client.send_reaction.assert_called_once()
-        call_args = mock_telegram_client.send_reaction.call_args
-        assert call_args.kwargs.get("reaction") == "👍"
-        assert call_args.kwargs.get("big") is False
-
-    async def test_react_calls_send_reaction_with_none_when_remove_true(
+    async def test_react_remove_true_sends_empty_reaction_list(
         self, mock_client_wrapper, mock_telegram_client
     ) -> None:
-        """
-        react() with remove=True calls _client.send_reaction(entity, message_id, reaction=None, big=big).
+        """remove=True clears the reaction, which Telegram spells as an empty list.
 
-        Expected: send_reaction is awaited once with reaction=None.
+        Passing reaction=None would mean "unset field", not "remove my reaction".
         """
-        mock_telegram_client.send_reaction = AsyncMock(return_value=None)
-        await mock_client_wrapper.react(name="Alice", message_id=42, emoji="👍", big=False, remove=True)
-        mock_telegram_client.send_reaction.assert_called_once()
-        call_args = mock_telegram_client.send_reaction.call_args
-        assert call_args.kwargs.get("reaction") is None
-        assert call_args.kwargs.get("big") is False
+        await mock_client_wrapper.react(name="Alice", message_id=42, emoji="\U0001F44D", big=False, remove=True)
+        req = mock_telegram_client.call_args.args[0]
+        assert req.reaction == []
 
     async def test_react_with_big_true(
         self, mock_client_wrapper, mock_telegram_client
     ) -> None:
-        """
-        react() with big=True passes big=True to send_reaction().
-
-        Expected: send_reaction called with big=True.
-        """
-        mock_telegram_client.send_reaction = AsyncMock(return_value=None)
-        await mock_client_wrapper.react(name="Alice", message_id=42, emoji="🔥", big=True, remove=False)
-        mock_telegram_client.send_reaction.assert_called_once()
-        call_args = mock_telegram_client.send_reaction.call_args
-        assert call_args.kwargs.get("big") is True
-        assert call_args.kwargs.get("reaction") == "🔥"
+        """big=True is forwarded to the TL request."""
+        await mock_client_wrapper.react(name="Alice", message_id=42, emoji="\U0001F525", big=True, remove=False)
+        req = mock_telegram_client.call_args.args[0]
+        assert req.big is True
+        assert [r.emoticon for r in req.reaction] == ["\U0001F525"]
 
     async def test_react_resolves_entity_by_dialog_id(
         self, mock_client_wrapper, mock_telegram_client
     ) -> None:
-        """
-        react() resolves the dialog entity by dialog_id before calling send_reaction.
-
-        Expected: get_entity is called with dialog_id; send_reaction is called once.
-        """
+        """react() resolves the peer by dialog_id and passes it as the request peer."""
         mock_telegram_client.get_entity.reset_mock()
         mock_telegram_client.get_entity.side_effect = None
-        mock_telegram_client.send_reaction = AsyncMock(return_value=None)
-        await mock_client_wrapper.react(dialog_id=123, message_id=42, emoji="😂", remove=False)
-        mock_telegram_client.get_entity.assert_called_once_with(123)
-        mock_telegram_client.send_reaction.assert_called_once()
+        await mock_client_wrapper.react(dialog_id=123, message_id=42, emoji="\U0001F602", remove=False)
+        mock_telegram_client.get_entity.assert_awaited_once_with(123)
+        req = mock_telegram_client.call_args.args[0]
+        assert req.peer is mock_telegram_client.get_entity.return_value
 
     async def test_react_resolves_entity_by_username(
         self, mock_client_wrapper, mock_telegram_client
     ) -> None:
-        """
-        react() resolves the dialog entity by username (stripping @) before calling send_reaction.
-
-        Expected: get_entity is called with stripped username; send_reaction is called once.
-        """
+        """react() resolves the peer by username, stripping the leading @."""
         mock_telegram_client.get_entity.reset_mock()
         mock_telegram_client.get_entity.side_effect = None
-        mock_telegram_client.send_reaction = AsyncMock(return_value=None)
-        await mock_client_wrapper.react(username="@alice", message_id=42, emoji="👍", remove=False)
-        mock_telegram_client.get_entity.assert_called_once_with("alice")
-        mock_telegram_client.send_reaction.assert_called_once()
+        await mock_client_wrapper.react(username="@alicesmith", message_id=42, emoji="\U0001F44D", remove=False)
+        mock_telegram_client.get_entity.assert_awaited_once_with("alicesmith")
+        mock_telegram_client.assert_awaited_once()
 
     async def test_react_resolves_entity_by_name(
         self, mock_client_wrapper, mock_telegram_client
     ) -> None:
-        """
-        react() resolves the dialog entity by name via iter_dialogs before calling send_reaction.
-
-        Expected: iter_dialogs is used; send_reaction is called once.
-        """
-        mock_telegram_client.send_reaction = AsyncMock(return_value=None)
-        await mock_client_wrapper.react(name="Alice", message_id=42, emoji="❤️", remove=False)
-        mock_telegram_client.send_reaction.assert_called_once()
+        """react() falls back to scanning dialogs when only name is given."""
+        await mock_client_wrapper.react(name="Alice", message_id=42, emoji="\u2764\ufe0f", remove=False)
+        mock_telegram_client.assert_awaited_once()
 
     async def test_react_no_selector_raises_value_error(
         self, mock_client_wrapper, mock_telegram_client
     ) -> None:
-        """
-        react() raises ValueError when no dialog selector is provided.
-
-        Expected: ValueError with "One of dialog_id, username, or name".
-        """
+        """react() raises ValueError when no dialog selector is provided."""
         with pytest.raises(ValueError, match="One of dialog_id, username, or name"):
-            await mock_client_wrapper.react(message_id=42, emoji="👍")
+            await mock_client_wrapper.react(message_id=42, emoji="\U0001F44D")
 
     async def test_react_message_id_is_passed_through(
         self, mock_client_wrapper, mock_telegram_client
     ) -> None:
-        """
-        react() passes the message_id argument correctly to send_reaction.
-
-        Expected: send_reaction is called with message_id as second positional arg.
-        """
-        mock_telegram_client.send_reaction = AsyncMock(return_value=None)
-        await mock_client_wrapper.react(name="Alice", message_id=99, emoji="👍", remove=False)
-        call_args = mock_telegram_client.send_reaction.call_args
-        # message_id should be second positional argument or in kwargs
-        assert 99 in call_args.args or call_args.kwargs.get("message_id") == 99 or call_args.args[1] == 99
+        """react() forwards message_id as the request msg_id."""
+        await mock_client_wrapper.react(name="Alice", message_id=99, emoji="\U0001F44D", remove=False)
+        assert mock_telegram_client.call_args.args[0].msg_id == 99
 
 
 class TestClickButton:
@@ -1509,3 +1491,136 @@ class TestDownloadMedia:
                 dialog_id=123, message_id=7, dest_dir=dest_dir
             )
         mock_telegram_client.download_media.assert_not_awaited()
+
+
+class TestClassifyButton:
+    """Tests for _classify_button().
+
+    Regression guard for the live-test finding that every non-url button
+    collapsed into kind="other" with url=None, which made webview buttons
+    indistinguishable from unclickable ones and turned tg_click into a silent
+    no-op on them.
+    """
+
+    @staticmethod
+    def _btn(raw, text="Label"):
+        b = MagicMock()
+        b.text = text
+        b.button = raw
+        return b
+
+    def test_url_button_gets_url_kind_and_url(self) -> None:
+        from telethon.tl.types import KeyboardButtonUrl
+        from tg_mcp.client import _classify_button
+
+        out = _classify_button(self._btn(KeyboardButtonUrl(text="Open", url="https://example.com")))
+        assert out.kind == "url"
+        assert out.url == "https://example.com"
+
+    def test_webview_button_gets_webview_kind_and_url(self) -> None:
+        """WebView buttons carry a url but are NOT KeyboardButtonUrl, so Telethon's
+        MessageButton.url property returns None for them — they used to fall through
+        to kind='other'."""
+        from telethon.tl.types import KeyboardButtonWebView
+        from tg_mcp.client import _classify_button
+
+        out = _classify_button(self._btn(KeyboardButtonWebView(text="App", url="https://app.example")))
+        assert out.kind == "webview"
+        assert out.url == "https://app.example"
+
+    def test_simple_webview_button_is_webview(self) -> None:
+        from telethon.tl.types import KeyboardButtonSimpleWebView
+        from tg_mcp.client import _classify_button
+
+        out = _classify_button(self._btn(KeyboardButtonSimpleWebView(text="App", url="https://s.example")))
+        assert out.kind == "webview"
+        assert out.url == "https://s.example"
+
+    def test_callback_button_is_callback_with_no_url(self) -> None:
+        from telethon.tl.types import KeyboardButtonCallback
+        from tg_mcp.client import _classify_button
+
+        out = _classify_button(self._btn(KeyboardButtonCallback(text="Next", data=b"next")))
+        assert out.kind == "callback"
+        assert out.url is None
+
+    def test_plain_keyboard_button_is_reply_not_callback(self) -> None:
+        """Bottom reply keyboards are not clickable via tg_click; they must not be
+        advertised as callback targets."""
+        from telethon.tl.types import KeyboardButton
+        from tg_mcp.client import _classify_button
+
+        out = _classify_button(self._btn(KeyboardButton(text="Menu")))
+        assert out.kind == "reply"
+
+    def test_unknown_button_type_falls_back_to_other(self) -> None:
+        from tg_mcp.client import _classify_button
+
+        raw = MagicMock(spec=[])  # no url, no data, unknown type
+        b = MagicMock()
+        b.text = "?"
+        b.button = raw
+        b.url = None
+        b.data = None
+        out = _classify_button(b)
+        assert out.kind == "other"
+
+
+class TestClickButtonNonCallback:
+    """tg_click must never silently no-op on a button it cannot press."""
+
+    @staticmethod
+    def _msg_with(raw_button, msg_id=42):
+        from datetime import datetime, timezone
+
+        b = MagicMock()
+        b.text = "Target"
+        b.button = raw_button
+        msg = MagicMock()
+        msg.id = msg_id
+        msg.date = datetime(2026, 3, 8, tzinfo=timezone.utc)
+        msg.text = "bot msg"
+        msg.out = False
+        msg.buttons = [[b]]
+        msg.get_sender = AsyncMock(return_value=None)
+        return msg
+
+    async def test_webview_button_returns_url_instead_of_clicking(
+        self, mock_client_wrapper, mock_telegram_client
+    ) -> None:
+        from telethon.tl.types import KeyboardButtonWebView
+
+        msg = self._msg_with(KeyboardButtonWebView(text="Target", url="https://w.example"))
+        mock_telegram_client.get_messages = AsyncMock(return_value=msg)
+        result = await mock_client_wrapper.click_button(name="Alice", message_id=42, text="Target")
+        assert result["url"] == "https://w.example"
+        msg.click.assert_not_called()
+
+    async def test_reply_keyboard_button_raises_clear_error(
+        self, mock_client_wrapper, mock_telegram_client
+    ) -> None:
+        """A bottom reply-keyboard button previously returned answer=None with an
+        unchanged message, indistinguishable from 'the bot stayed quiet'."""
+        from telethon.tl.types import KeyboardButton
+
+        msg = self._msg_with(KeyboardButton(text="Target"))
+        mock_telegram_client.get_messages = AsyncMock(return_value=msg)
+        with pytest.raises(ValueError, match="not clickable"):
+            await mock_client_wrapper.click_button(name="Alice", message_id=42, text="Target")
+        msg.click.assert_not_called()
+
+
+class TestMessageReplyTo:
+    """_to_message() surfaces reply_to so a threaded reply is visible via tg_dialog."""
+
+    async def test_reply_to_is_populated(self, mock_client_wrapper, mock_telegram_message) -> None:
+        mock_telegram_message.reply_to_msg_id = 41
+        mock_telegram_message.buttons = None
+        out = await mock_client_wrapper._to_message(mock_telegram_message)
+        assert out.reply_to == 41
+
+    async def test_reply_to_is_none_for_non_reply(self, mock_client_wrapper, mock_telegram_message) -> None:
+        mock_telegram_message.reply_to_msg_id = None
+        mock_telegram_message.buttons = None
+        out = await mock_client_wrapper._to_message(mock_telegram_message)
+        assert out.reply_to is None

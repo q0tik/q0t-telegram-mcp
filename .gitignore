@@ -3,3 +3,7 @@ __pycache__
 .vscode/.env
 dist/
 *.egg-info/
+# Coverage artifacts
+.coverage
+.coverage.*
+htmlcov/

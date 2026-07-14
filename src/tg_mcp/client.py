@@ -7,29 +7,47 @@ from typing import Any
 import telethon.utils
 from telethon import TelegramClient
 from telethon.errors import UsernameNotOccupiedError
+from telethon.tl import types
+from telethon.tl.functions.messages import SendReactionRequest
+from telethon.tl.types import ReactionEmoji
 
 from .config import Config
 from .models import Button, Dialog, Message, UserInfo
 
 
+def _classify_button(b) -> Button:
+    """Classify one Telethon MessageButton by its underlying TL type.
+
+    Only ``callback`` buttons can be pressed via tg_click. Everything else is
+    labelled honestly so callers do not aim tg_click at a target that cannot
+    respond: ``url``/``webview`` carry a link to open, and ``reply`` is a bottom
+    keyboard that only sends its own text back.
+    """
+    raw = getattr(b, "button", None)
+    if isinstance(raw, (types.KeyboardButtonUrl, types.KeyboardButtonUrlAuth)):
+        return Button(text=b.text, kind="url", url=raw.url)
+    if isinstance(raw, (types.KeyboardButtonWebView, types.KeyboardButtonSimpleWebView)):
+        return Button(text=b.text, kind="webview", url=raw.url)
+    if isinstance(raw, types.KeyboardButtonCallback):
+        return Button(text=b.text, kind="callback")
+    if type(raw) is types.KeyboardButton:
+        return Button(text=b.text, kind="reply")
+    # Fall back to duck-typing so unknown//future TL button types still degrade
+    # usefully rather than all collapsing into "other".
+    url = getattr(b, "url", None)
+    if url:
+        return Button(text=b.text, kind="url", url=url)
+    if getattr(b, "data", None) is not None:
+        return Button(text=b.text, kind="callback")
+    return Button(text=b.text, kind="other")
+
+
 def _extract_buttons(message) -> "list[list[Button]] | None":
-    """Map a Telethon message's inline keyboard to nested Button rows."""
+    """Map a Telethon message's keyboard to nested Button rows."""
     rows = getattr(message, "buttons", None)
     if not rows:
         return None
-    result: list[list[Button]] = []
-    for row in rows:
-        brow: list[Button] = []
-        for b in row:
-            url = getattr(b, "url", None)
-            if url:
-                brow.append(Button(text=b.text, kind="url", url=url))
-            elif getattr(b, "data", None) is not None:
-                brow.append(Button(text=b.text, kind="callback"))
-            else:
-                brow.append(Button(text=b.text, kind="other"))
-        result.append(brow)
-    return result
+    return [[_classify_button(b) for b in row] for row in rows]
 
 
 def _pm(parse_mode: str | None) -> str | None:
@@ -181,6 +199,7 @@ class TelegramClientWrapper:
             media=_describe_media(m),
             chat_id=chat_id,
             chat_name=chat_name,
+            reply_to=getattr(m, "reply_to_msg_id", None),
         )
 
     async def get_messages(
@@ -215,7 +234,7 @@ class TelegramClientWrapper:
         name: str | None = None,
         reply_to: int | None = None,
         parse_mode: str | None = "markdown",
-    ) -> None:
+    ) -> int | None:
         """Send a text message to a dialog.
 
         Args:
@@ -226,11 +245,18 @@ class TelegramClientWrapper:
             reply_to: Message ID to reply to.
             parse_mode: Text formatting: "markdown" (default), "html", or "none".
 
+        Returns:
+            The ID of the sent message, so callers can edit/delete/click it
+            without re-fetching the dialog and guessing which one is theirs.
+
         Raises:
             ValueError: If no dialog matching the provided selector can be found.
         """
         entity = await self._resolve_entity(dialog_id=dialog_id, username=username, name=name)
-        await self._client.send_message(entity, text, reply_to=reply_to, parse_mode=_pm(parse_mode))
+        sent = await self._client.send_message(
+            entity, text, reply_to=reply_to, parse_mode=_pm(parse_mode)
+        )
+        return getattr(sent, "id", None)
 
     async def send_file(
         self,
@@ -239,7 +265,7 @@ class TelegramClientWrapper:
         username: str | None = None,
         name: str | None = None,
         caption: str | None = None,
-    ) -> None:
+    ) -> int | None:
         """Send a file to a dialog.
 
         Args:
@@ -249,11 +275,15 @@ class TelegramClientWrapper:
             name: Dialog display name. Least reliable; resolved by scanning dialogs.
             caption: Optional text caption to attach to the file.
 
+        Returns:
+            The ID of the sent message.
+
         Raises:
             ValueError: If no dialog matching the provided selector can be found.
         """
         entity = await self._resolve_entity(dialog_id=dialog_id, username=username, name=name)
-        await self._client.send_file(entity, file_path, caption=caption)
+        sent = await self._client.send_file(entity, file_path, caption=caption)
+        return getattr(sent, "id", None)
 
     async def forward_message(
         self,
@@ -331,8 +361,12 @@ class TelegramClientWrapper:
             ValueError: If no dialog matching the provided selector can be found.
         """
         entity = await self._resolve_entity(dialog_id=dialog_id, username=username, name=name)
-        reaction = None if remove else emoji
-        await self._client.send_reaction(entity, message_id, reaction=reaction, big=big)
+        # Telethon has no TelegramClient.send_reaction; reactions go through the raw
+        # TL request. An empty reaction list is how Telegram spells "remove mine".
+        reaction = [] if remove else [ReactionEmoji(emoticon=emoji)]
+        await self._client(
+            SendReactionRequest(peer=entity, msg_id=message_id, reaction=reaction, big=big)
+        )
 
     async def click_button(
         self,
@@ -383,9 +417,17 @@ class TelegramClientWrapper:
         if target is None:
             raise ValueError(f"Button not found: {text}. Available: {labels}")
         i, j, btn = target
-        if getattr(btn, "url", None):
-            return {"answer": None, "alert": False, "url": btn.url,
+        info = _classify_button(btn)
+        if info.kind in ("url", "webview"):
+            return {"answer": None, "alert": False, "url": info.url,
                     "message": await self._to_message(message)}
+        if info.kind != "callback":
+            # Pressing these via message.click() is a silent no-op, which the
+            # caller cannot distinguish from "the bot stayed quiet". Say so.
+            raise ValueError(
+                f"Button {text!r} is not clickable (kind={info.kind}); "
+                "only callback buttons can be pressed"
+            )
         answer = await message.click(i, j)
         updated = await self._client.get_messages(entity, ids=message_id)
         return {

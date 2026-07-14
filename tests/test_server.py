@@ -21,6 +21,7 @@ import inspect
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
+from tg_mcp.client import TelegramClientWrapper
 from tg_mcp.models import Dialog, Message, UserInfo
 from tg_mcp.server import tg_me, tg_dialogs, tg_dialog, tg_send, tg_send_file, tg_forward, tg_read, tg_click, tg_react, tg_delete, tg_edit, tg_search, tg_download
 
@@ -38,8 +39,12 @@ def _make_ctx(client_wrapper):
 
 
 def _make_mock_client():
-    """Return a fresh AsyncMock TelegramClientWrapper with sensible defaults."""
-    client = MagicMock()
+    """Return a fresh AsyncMock TelegramClientWrapper with sensible defaults.
+
+    spec_set against the real wrapper so a tool calling a method the wrapper does
+    not have fails here instead of at runtime.
+    """
+    client = MagicMock(spec_set=TelegramClientWrapper)
     client.get_me = AsyncMock(return_value=UserInfo(
         id=123456789,
         first_name="Alice",
@@ -69,8 +74,8 @@ def _make_mock_client():
             sender="Alice Smith",
         )
     ])
-    client.send_message = AsyncMock(return_value=None)
-    client.send_file = AsyncMock(return_value=None)
+    client.send_message = AsyncMock(return_value=100)
+    client.send_file = AsyncMock(return_value=200)
     client.forward_message = AsyncMock(return_value=None)
     client.mark_read = AsyncMock(return_value=None)
     client.react = AsyncMock(return_value=None)
@@ -395,7 +400,7 @@ class TestTgSend:
         client = _make_mock_client()
         ctx = _make_ctx(client)
         result = await tg_send(ctx, name="Alice", text="Hello")
-        assert result == {"ok": True}
+        assert result == {"ok": True, "message_id": 100}
 
     async def test_tg_send_passes_name_and_text(
         self, mock_client_wrapper
@@ -473,7 +478,7 @@ class TestTgSendFile:
         client = _make_mock_client()
         ctx = _make_ctx(client)
         result = await tg_send_file(ctx, name="Alice", file_path="/tmp/test.txt")
-        assert result == {"ok": True}
+        assert result == {"ok": True, "message_id": 200}
 
     async def test_tg_send_file_passes_all_params(self, mock_client_wrapper) -> None:
         """tg_send_file() passes file_path, caption, and dialog selector to client."""
@@ -504,7 +509,7 @@ class TestTgSendFile:
         client = _make_mock_client()
         ctx = _make_ctx(client)
         result = await tg_send_file(ctx, dialog_id=123, file_path="/tmp/f.txt")
-        assert result == {"ok": True}
+        assert result == {"ok": True, "message_id": 200}
         client.send_file.assert_called_once_with(
             file_path="/tmp/f.txt", dialog_id=123, username=None, name=None, caption=None
         )
@@ -633,7 +638,7 @@ class TestTgSendDisambiguation:
         client = _make_mock_client()
         ctx = _make_ctx(client)
         result = await tg_send(ctx, text="Hi", dialog_id=123)
-        assert result == {"ok": True}
+        assert result == {"ok": True, "message_id": 100}
         client.send_message.assert_called_once_with(
             text="Hi", dialog_id=123, username=None, name=None, reply_to=None, parse_mode="markdown"
         )
@@ -647,7 +652,7 @@ class TestTgSendDisambiguation:
         client = _make_mock_client()
         ctx = _make_ctx(client)
         result = await tg_send(ctx, text="Hi", username="alicesmith")
-        assert result == {"ok": True}
+        assert result == {"ok": True, "message_id": 100}
         client.send_message.assert_called_once_with(
             text="Hi", dialog_id=None, username="alicesmith", name=None, reply_to=None, parse_mode="markdown"
         )
@@ -662,7 +667,7 @@ class TestTgSendDisambiguation:
         client = _make_mock_client()
         ctx = _make_ctx(client)
         result = await tg_send(ctx, text="Hi", username="@alicesmith")
-        assert result == {"ok": True}
+        assert result == {"ok": True, "message_id": 100}
         client.send_message.assert_called_once_with(
             text="Hi", dialog_id=None, username="@alicesmith", name=None, reply_to=None, parse_mode="markdown"
         )
@@ -676,7 +681,7 @@ class TestTgSendDisambiguation:
         client = _make_mock_client()
         ctx = _make_ctx(client)
         result = await tg_send(ctx, text="Hi", name="Alice")
-        assert result == {"ok": True}
+        assert result == {"ok": True, "message_id": 100}
         client.send_message.assert_called_once_with(
             text="Hi", dialog_id=None, username=None, name="Alice", reply_to=None, parse_mode="markdown"
         )

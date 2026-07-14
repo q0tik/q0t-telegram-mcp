@@ -40,8 +40,8 @@ class Button:
     """A single inline-keyboard button on a bot message."""
 
     text: str                 # visible label
-    kind: str                 # "callback" | "url" | "other"
-    url: str | None = None    # populated only for kind == "url"
+    kind: str                 # "callback" | "url" | "webview" | "reply" | "other"
+    url: str | None = None    # populated for kind == "url" and kind == "webview"
 
 
 @dataclass(frozen=True)
@@ -60,3 +60,4 @@ class Message:
     media: str | None = None                     # e.g. "photo", "document: report.pdf"; None for text
     chat_id: int | None = None                   # populated only by tg_search results
     chat_name: str | None = None                 # populated only by tg_search results
+    reply_to: int | None = None                  # ID of the message this one replies to
