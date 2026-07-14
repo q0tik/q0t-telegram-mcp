@@ -40,6 +40,8 @@ Messages returned by `tg_dialog` carry a `reactions` field: a list of `{kind, co
 | `paid` | Paid (star) reaction |
 | `other` | Unrecognised reaction type |
 
+Telegram normalises the emoji it stores, so what comes back is not always byte-identical to what you sent: reacting with `❤️` (U+2764 U+FE0F) reads back as `❤` (U+2764, variation selector dropped). Removal still works with either form, but comparing `sent == reactions[i].emoji` directly will surprise you — normalise before comparing.
+
 ### Buttons and what `tg_click` can press
 
 Messages returned by `tg_dialog` carry a `buttons` field: rows of `{text, kind, url}`, or `null` when the message has no keyboard. The `kind` tells you what the button actually is:
