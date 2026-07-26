@@ -60,10 +60,55 @@ class TestConfigFromEnv:
         """
         Config.from_env() sets session_path to <cwd>/.telegram-mcp/session.
         """
-        with patch.dict(os.environ, {"TG_APP_ID": "12345", "TG_API_HASH": "hash"}):
+        with patch.dict(os.environ, {"TG_APP_ID": "12345", "TG_API_HASH": "hash",
+                                     "TG_SESSION_PATH": ""}):
             config = Config.from_env()
         expected = Path.cwd() / ".telegram-mcp" / "session"
         assert config.session_path == expected
+
+
+class TestConfigSessionPathOverride:
+    """Tests for the TG_SESSION_PATH override.
+
+    Without it every account needs its own working directory, because the
+    default path is cwd-relative — that is what stops one process tree from
+    serving several Telegram accounts.
+    """
+
+    def test_env_var_overrides_default(self) -> None:
+        """TG_SESSION_PATH replaces the cwd-relative default verbatim."""
+        with patch.dict(os.environ, {"TG_APP_ID": "1", "TG_API_HASH": "h",
+                                     "TG_SESSION_PATH": "/data/tg/alice.session"}):
+            config = Config.from_env()
+        assert config.session_path == Path("/data/tg/alice.session")
+
+    def test_env_var_without_extension_is_kept_as_is(self) -> None:
+        """No extension is invented: Telethon appends `.session` when missing."""
+        with patch.dict(os.environ, {"TG_APP_ID": "1", "TG_API_HASH": "h",
+                                     "TG_SESSION_PATH": "/data/tg/alice"}):
+            config = Config.from_env()
+        assert config.session_path == Path("/data/tg/alice")
+
+    def test_blank_env_var_falls_back_to_default(self) -> None:
+        """A blank value means "not configured", not "the current directory"."""
+        with patch.dict(os.environ, {"TG_APP_ID": "1", "TG_API_HASH": "h",
+                                     "TG_SESSION_PATH": "   "}):
+            config = Config.from_env()
+        assert config.session_path == Path.cwd() / ".telegram-mcp" / "session"
+
+    def test_tilde_is_expanded(self) -> None:
+        """`~` is expanded — the value often comes from a shell-written config."""
+        with patch.dict(os.environ, {"TG_APP_ID": "1", "TG_API_HASH": "h",
+                                     "TG_SESSION_PATH": "~/tg/bob.session"}):
+            config = Config.from_env()
+        assert config.session_path == Path.home() / "tg" / "bob.session"
+
+    def test_session_dir_follows_the_override(self) -> None:
+        """session_dir() is what `auth` mkdir's — it must track the override."""
+        with patch.dict(os.environ, {"TG_APP_ID": "1", "TG_API_HASH": "h",
+                                     "TG_SESSION_PATH": "/data/tg/alice.session"}):
+            config = Config.from_env()
+        assert config.session_dir() == Path("/data/tg")
 
 
 class TestConfigSessionDir:

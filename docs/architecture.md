@@ -13,7 +13,7 @@
 | Telegram client wrapper | `src/tg_mcp/client.py` | Async wrapper around `TelegramClient` |
 | Data models | `src/tg_mcp/models.py` | `UserInfo`, `Dialog`, `Message` dataclasses |
 | Auth CLI | `src/tg_mcp/auth.py` | Interactive auth flow: send code, OTP prompt, 2FA |
-| Configuration | `src/tg_mcp/config.py` | Env var reading (`TG_APP_ID`, `TG_API_HASH`), session path resolution |
+| Configuration | `src/tg_mcp/config.py` | Env var reading (`TG_APP_ID`, `TG_API_HASH`, optional `TG_SESSION_PATH`), session path resolution |
 
 ---
 
@@ -396,13 +396,16 @@ def cli(ctx: click.Context) -> None:
 @cli.command()
 @click.option("--phone", required=True, help="Your phone number with country code")
 @click.option("--password", default=None, help="2FA password if enabled")
-def auth(phone: str, password: str | None) -> None:
+@click.option("--app-id", default=None, type=int, help="overrides TG_APP_ID")
+@click.option("--api-hash", default=None, help="overrides TG_API_HASH")
+@click.option("--session", default=None, help="overrides TG_SESSION_PATH")
+def auth(phone, password, app_id, api_hash, session) -> None:
     """Authenticate with Telegram and save session."""
     import asyncio
-    asyncio.run(_run_auth(phone, password))
+    asyncio.run(_run_auth(phone, password, app_id, api_hash, session))
 ```
 
-`_run_auth` instantiates `Config.from_env()` and `AuthFlow(config)`, then calls `await auth_flow.run(phone, password)`.
+`_run_auth` writes the supplied flags into `os.environ` (that is how "flags beat env" is implemented — there is one resolution path, `Config.from_env`), instantiates `Config.from_env()` and `AuthFlow(config)`, then calls `await auth_flow.run(phone, password)`.
 
 ---
 
@@ -462,8 +465,15 @@ class Config:
             raise EnvironmentError("TG_APP_ID environment variable is not set")
         if not api_hash:
             raise EnvironmentError("TG_API_HASH environment variable is not set")
-        session_path = Path.cwd() / ".telegram-mcp" / ".session"
-        return cls(app_id=int(app_id_str), api_hash=api_hash, session_path=session_path)
+        return cls(app_id=int(app_id_str), api_hash=api_hash,
+                   session_path=cls._session_path_from_env())
+
+    @staticmethod
+    def _session_path_from_env() -> Path:
+        override = (os.environ.get("TG_SESSION_PATH") or "").strip()
+        if not override:
+            return Path.cwd() / ".telegram-mcp" / "session"
+        return Path(override).expanduser()
 
     def session_dir(self) -> Path:
         return self.session_path.parent
@@ -471,9 +481,14 @@ class Config:
 
 ### Session path resolution
 
-- The session file lives at `<cwd>/.telegram-mcp/.session`
+- `TG_SESSION_PATH`, when set, is the session path verbatim (`~` expanded). A **blank** value counts as unset: an empty variable is how "not configured" reaches a container, and treating it as a path would aim the session at the current directory itself.
+- Otherwise the session file lives at `<cwd>/.telegram-mcp/session`
 - `cwd` is wherever the user runs the `auth` command or starts the MCP server
 - For Claude Code users, `cwd` will typically be the project root (where `.mcp.json` lives)
+
+### Why the override exists
+
+The default path is cwd-relative, and MCP servers inherit the cwd of the client that spawns them. Two entries in the same `.mcp.json` therefore resolve to the *same* session file — which caps the server at one Telegram account per working directory. `TG_SESSION_PATH` (or `auth --session`) breaks that tie, so N accounts can be served side by side from one directory. Credentials stay shared: `TG_APP_ID`/`TG_API_HASH` identify the application, the session identifies the account.
 - The session file name `.session` produces a `session.session` file on disk (Telethon appends `.session` to the string path passed to `TelegramClient`). To avoid double extension, pass `str(session_path.with_suffix(""))` to Telethon — i.e., strip the `.session` suffix before passing, so Telethon creates `.telegram-mcp/.session.session` — **actually the cleaner approach**: name the session `session` (no extension) and store as `.telegram-mcp/session`. Telethon then creates `.telegram-mcp/session.session`.
 
 **Final decision**: `session_path = Path.cwd() / ".telegram-mcp" / "session"` (no extension in the Python Path). Telethon will create `.telegram-mcp/session.session` on disk. The `Config.session_path` property holds the extensionless path passed to Telethon.

@@ -90,6 +90,8 @@ Obtain API credentials from [https://my.telegram.org/apps](https://my.telegram.o
 | `TG_APP_ID` | https://my.telegram.org/apps |
 | `TG_API_HASH` | https://my.telegram.org/apps |
 
+`TG_SESSION_PATH` is optional — see [Choosing the session path](#choosing-the-session-path-tg_session_path).
+
 ## Installation & Authentication
 
 No repository clone is needed. Use `uvx` to run directly from PyPI.
@@ -121,13 +123,53 @@ You will be prompted to enter the OTP sent to your Telegram app (or SMS). After 
 
 ## Session File Location
 
-The session is stored at `.telegram-mcp/session.session` relative to whichever directory `auth` was run from. The MCP server must be started from the same directory so it can find the session.
+By default the session is stored at `.telegram-mcp/session.session` relative to whichever directory `auth` was run from. The MCP server must be started from the same directory so it can find the session.
 
 For Claude Code users, add `.telegram-mcp/` to `.gitignore` to avoid committing credentials:
 
 ```
 .telegram-mcp/
 ```
+
+### Choosing the session path (`TG_SESSION_PATH`)
+
+Set `TG_SESSION_PATH` — or pass `--session` to `auth` — to put the session file wherever you like. The flag wins over the environment variable, as with the credential flags.
+
+```bash
+TG_APP_ID=your_app_id TG_API_HASH=your_api_hash uvx q0t-telegram-mcp auth \
+  --phone +1234567890 --session ~/telegram-sessions/alice.session
+```
+
+The value names the session *file*. Telethon appends the `.session` extension when it is missing, so `alice` and `alice.session` address the same file. A blank value counts as "not set" and falls back to the default above.
+
+This is what makes **several accounts at once** possible. The default path is relative to the working directory, so two servers started from the same directory would fight over one session file; give each its own path and they coexist:
+
+```json
+{
+  "mcpServers": {
+    "telegram_alice": {
+      "command": "uvx",
+      "args": ["q0t-telegram-mcp"],
+      "env": {
+        "TG_APP_ID": "your_app_id",
+        "TG_API_HASH": "your_api_hash",
+        "TG_SESSION_PATH": "/home/you/telegram-sessions/alice.session"
+      }
+    },
+    "telegram_bob": {
+      "command": "uvx",
+      "args": ["q0t-telegram-mcp"],
+      "env": {
+        "TG_APP_ID": "your_app_id",
+        "TG_API_HASH": "your_api_hash",
+        "TG_SESSION_PATH": "/home/you/telegram-sessions/bob.session"
+      }
+    }
+  }
+}
+```
+
+Both entries may share one `TG_APP_ID`/`TG_API_HASH`: the app credentials identify the *application*, the session identifies the *account*.
 
 ## Claude Code Configuration
 

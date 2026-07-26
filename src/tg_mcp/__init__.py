@@ -14,6 +14,7 @@ async def _run_auth(
     password: str | None,
     app_id: int | None,
     api_hash: str | None,
+    session: str | None = None,
 ) -> None:
     """Load config (args take priority over env vars) and run the authentication flow."""
     import os
@@ -22,6 +23,8 @@ async def _run_auth(
         os.environ["TG_APP_ID"] = str(app_id)
     if api_hash is not None:
         os.environ["TG_API_HASH"] = api_hash
+    if session is not None:
+        os.environ["TG_SESSION_PATH"] = session
     config = Config.from_env()
     auth_flow = AuthFlow(config)
     await auth_flow.run(phone, password)
@@ -40,9 +43,13 @@ def cli(ctx: click.Context) -> None:
 @click.option("--password", default=None, help="2FA password if enabled")
 @click.option("--app-id", default=None, type=int, help="Telegram app_id (overrides TG_APP_ID env var)")
 @click.option("--api-hash", default=None, help="Telegram api_hash (overrides TG_API_HASH env var)")
-def auth(phone: str, password: str | None, app_id: int | None, api_hash: str | None) -> None:
+@click.option("--session", default=None,
+              help="Session file path (overrides TG_SESSION_PATH env var); "
+                   "default is .telegram-mcp/session under the current directory")
+def auth(phone: str, password: str | None, app_id: int | None, api_hash: str | None,
+         session: str | None) -> None:
     """Authenticate with Telegram and save session."""
-    asyncio.run(_run_auth(phone, password, app_id, api_hash))
+    asyncio.run(_run_auth(phone, password, app_id, api_hash, session))
 
 
 def main() -> None:
