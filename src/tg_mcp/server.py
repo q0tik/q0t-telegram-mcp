@@ -1,4 +1,5 @@
 import dataclasses
+import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -57,7 +58,6 @@ def _error_message(exc: Exception) -> str:
     return f"{type(exc).__name__}: {text}" if text else type(exc).__name__
 
 
-@mcp.tool()
 async def tg_me(ctx: Context) -> dict:
     """Get current Telegram account info."""
     client: TelegramClientWrapper = ctx.request_context.lifespan_context.client
@@ -68,7 +68,6 @@ async def tg_me(ctx: Context) -> dict:
         return {"error": _error_message(e)}
 
 
-@mcp.tool()
 async def tg_dialogs(
     ctx: Context,
     unread_only: Annotated[bool, Field(description="When true, only return dialogs with unread messages.")] = False,
@@ -84,7 +83,6 @@ async def tg_dialogs(
         return [{"error": _error_message(e)}]
 
 
-@mcp.tool()
 async def tg_dialog(
     ctx: Context,
     dialog_id: Annotated[Optional[int], Field(description="Numeric ID from tg_dialogs. Most reliable, no ambiguity."), WithJsonSchema({"type": "integer", "description": "Numeric ID from tg_dialogs. Most reliable, no ambiguity."})] = None,
@@ -106,7 +104,6 @@ async def tg_dialog(
         return [{"error": _error_message(e)}]
 
 
-@mcp.tool()
 async def tg_send(
     ctx: Context,
     text: Annotated[str, Field(description="Message body to send.")],
@@ -127,7 +124,6 @@ async def tg_send(
         return {"error": _error_message(e)}
 
 
-@mcp.tool()
 async def tg_send_file(
     ctx: Context,
     file_path: Annotated[str, Field(description="Local filesystem path to the file to send.")],
@@ -153,7 +149,6 @@ async def tg_send_file(
         return {"error": _error_message(e)}
 
 
-@mcp.tool()
 async def tg_forward(
     ctx: Context,
     message_id: Annotated[int, Field(description="ID of the message to forward (from tg_dialog results).")],
@@ -185,7 +180,6 @@ async def tg_forward(
         return {"error": _error_message(e)}
 
 
-@mcp.tool()
 async def tg_read(
     ctx: Context,
     dialog_id: Annotated[Optional[int], Field(description="Numeric ID from tg_dialogs. Most reliable, no ambiguity."), WithJsonSchema({"type": "integer", "description": "Numeric ID from tg_dialogs. Most reliable, no ambiguity."})] = None,
@@ -203,7 +197,6 @@ async def tg_read(
         return {"error": _error_message(e)}
 
 
-@mcp.tool()
 async def tg_click(
     ctx: Context,
     message_id: Annotated[int, Field(description="ID of the bot message whose inline keyboard to click.")],
@@ -231,7 +224,6 @@ async def tg_click(
         return {"error": _error_message(e)}
 
 
-@mcp.tool()
 async def tg_react(
     ctx: Context,
     message_id: Annotated[int, Field(description="ID of the message to react to.")],
@@ -254,7 +246,6 @@ async def tg_react(
         return {"error": _error_message(e)}
 
 
-@mcp.tool()
 async def tg_delete(
     ctx: Context,
     message_ids: Annotated[list[int], Field(description="IDs of messages to delete.")],
@@ -275,7 +266,6 @@ async def tg_delete(
         return {"error": _error_message(e)}
 
 
-@mcp.tool()
 async def tg_edit(
     ctx: Context,
     message_id: Annotated[int, Field(description="ID of your own message to edit.")],
@@ -297,7 +287,6 @@ async def tg_edit(
         return {"error": _error_message(e)}
 
 
-@mcp.tool()
 async def tg_search(
     ctx: Context,
     query: Annotated[str, Field(description="Text to search for.")],
@@ -315,7 +304,6 @@ async def tg_search(
         return [{"error": _error_message(e)}]
 
 
-@mcp.tool()
 async def tg_download(
     ctx: Context,
     message_id: Annotated[int, Field(description="ID of the message whose media to download.")],
@@ -335,6 +323,51 @@ async def tg_download(
         return {"error": _error_message(e)}
 
 
+#: Tools that only observe. Nothing here is visible to anyone else on Telegram.
+#: tg_download writes to local disk but changes no account state.
+READ_TOOLS = [tg_me, tg_dialogs, tg_dialog, tg_search, tg_download]
+
+#: Tools that act as the account owner.
+#:
+#: Two of these read as passive but are not: tg_read marks a dialog read, which
+#: the other party can observe and which destroys unread state; tg_click fires a
+#: callback query at a bot, which can trigger anything that bot does. Grouping
+#: them with the obvious writers is the whole point of the split.
+WRITE_TOOLS = [
+    tg_send, tg_send_file, tg_forward, tg_read, tg_click,
+    tg_react, tg_delete, tg_edit,
+]
+
+_READONLY_TRUE = {"1", "true", "yes"}
+
+
+def readonly_from_env() -> bool:
+    """Return True when ``TG_READONLY`` asks for a read-only tool set.
+
+    Accepts ``1``/``true``/``yes`` in any case. Anything else — including an
+    unset or blank value — leaves the full set registered, so no 0.6.x
+    configuration changes meaning.
+    """
+    return (os.environ.get("TG_READONLY") or "").strip().lower() in _READONLY_TRUE
+
+
+def register_tools(server: FastMCP, *, readonly: bool) -> None:
+    """Register the tool set on *server*.
+
+    In read-only mode the writing tools are never registered, so they do not
+    appear in ``list_tools`` at all. Registering them and refusing at call time
+    would still advertise the capability to the model — and an advertised tool
+    gets attempted, argued with, and worked around. Absent is unambiguous.
+    """
+    for fn in READ_TOOLS:
+        server.add_tool(fn)
+    if readonly:
+        return
+    for fn in WRITE_TOOLS:
+        server.add_tool(fn)
+
+
 def run_server() -> None:
     """Start the MCP server. Blocks until the server is stopped."""
+    register_tools(mcp, readonly=readonly_from_env())
     mcp.run()

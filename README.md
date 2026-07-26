@@ -13,19 +13,22 @@ This project fixes both and builds a reliable, well-tested replacement.
 
 ## MCP Tools
 
+Tools marked ✎ change state and are omitted entirely under
+[`TG_READONLY`](#read-only-mode-tg_readonly).
+
 | Tool | Parameters | Returns | Description |
 |------|-----------|---------|-------------|
 | `tg_me` | — | `UserInfo` | Get current Telegram account info |
 | `tg_dialogs` | `unread_only` (bool, default `false`), `limit` (int, default `20`), `offset` (int, default `0`) | List of dialogs — each has `id`, `name`, `username` (or `null`), `unread_count`, type flags, `last_message`, `date` | List dialogs (chats, groups, channels) |
 | `tg_dialog` | `dialog_id` (int), `username` (str), or `name` (str) — at least one required; `limit` (int, default `20`), `offset` (int, default `0`) | List of messages | Get messages from a dialog |
-| `tg_send` | dialog selector — at least one required; `text` (str); `reply_to` (int, optional); `parse_mode` (`markdown` default, `html`, or `none`) | `{"ok": true, "message_id": n}` | Send a message — calls `SendMessage`, never `SaveDraft` |
-| `tg_send_file` | dialog selector — at least one required; `file_path` (str); `caption` (str, optional) | `{"ok": true, "message_id": n}` | Send a file to a dialog |
-| `tg_forward` | `message_id` (int); one source `from_*` selector; one destination `to_*` selector | `{"ok": true}` | Forward a message from one dialog to another |
-| `tg_read` | `dialog_id` (int), `username` (str), or `name` (str) — at least one required | `{"ok": true}` | Mark all messages in a dialog as read |
-| `tg_click` | dialog selector; `message_id` (int); `text` (str, button label); `row`/`col` (int, optional) | `{answer, alert, message, url?}` | Press an inline keyboard button on a bot message; returns the callback answer and the (usually edited) message |
-| `tg_react` | dialog selector; `message_id` (int); `emoji` (str); `big` (bool, default `false`); `remove` (bool, default `false`) | `{"ok": true}` | React to a message with an emoji (or remove the reaction). Verify the result by reading `reactions` from `tg_dialog`. |
-| `tg_edit` | dialog selector; `message_id` (int); `text` (str); `parse_mode` (`markdown` default, `html`, `none`) | `{"ok": true}` | Edit one of your own sent messages |
-| `tg_delete` | dialog selector; `message_ids` (list[int]); `revoke` (bool, default `true`) | `{"ok": true, "deleted": n}` | Delete one or more messages |
+| `tg_send` ✎ | dialog selector — at least one required; `text` (str); `reply_to` (int, optional); `parse_mode` (`markdown` default, `html`, or `none`) | `{"ok": true, "message_id": n}` | Send a message — calls `SendMessage`, never `SaveDraft` |
+| `tg_send_file` ✎ | dialog selector — at least one required; `file_path` (str); `caption` (str, optional) | `{"ok": true, "message_id": n}` | Send a file to a dialog |
+| `tg_forward` ✎ | `message_id` (int); one source `from_*` selector; one destination `to_*` selector | `{"ok": true}` | Forward a message from one dialog to another |
+| `tg_read` ✎ | `dialog_id` (int), `username` (str), or `name` (str) — at least one required | `{"ok": true}` | Mark all messages in a dialog as read |
+| `tg_click` ✎ | dialog selector; `message_id` (int); `text` (str, button label); `row`/`col` (int, optional) | `{answer, alert, message, url?}` | Press an inline keyboard button on a bot message; returns the callback answer and the (usually edited) message |
+| `tg_react` ✎ | dialog selector; `message_id` (int); `emoji` (str); `big` (bool, default `false`); `remove` (bool, default `false`) | `{"ok": true}` | React to a message with an emoji (or remove the reaction). Verify the result by reading `reactions` from `tg_dialog`. |
+| `tg_edit` ✎ | dialog selector; `message_id` (int); `text` (str); `parse_mode` (`markdown` default, `html`, `none`) | `{"ok": true}` | Edit one of your own sent messages |
+| `tg_delete` ✎ | dialog selector; `message_ids` (list[int]); `revoke` (bool, default `true`) | `{"ok": true, "deleted": n}` | Delete one or more messages |
 | `tg_search` | `query` (str); dialog selector (optional — omit for a global search); `limit` (int, default `20`) | List of messages (each with `chat_id`/`chat_name`) | Search messages by text, per-dialog or globally |
 | `tg_download` | dialog selector; `message_id` (int); `dest_dir` (str, optional) | `{path, media, size}` | Download a message's media (photo/voice/document/…) to disk |
 
@@ -68,6 +71,12 @@ The same three selectors are available for every message tool (`tg_dialog`, `tg_
 
 When more than one selector is supplied, priority is: `dialog_id > username > name`.
 
+A `@handle` is understood in the `name` slot too, so putting it in the "wrong" field is not a
+failure. Resolution of `name` tries, in order: an exact display-name match; then — when the
+value starts with `@` — a handle lookup against Telegram; then a case-insensitive match against
+the `username` of your dialogs. Display name keeps priority, so nothing that resolved before
+0.7.0 resolves differently now.
+
 ## Disambiguation: when to use `dialog_id` vs `name`
 
 Use `name` only as a fallback. Two real problems arise when you rely on it:
@@ -83,14 +92,30 @@ Use `name` only as a fallback. Two real problems arise when you rely on it:
 
 ## Prerequisites
 
-Obtain API credentials from [https://my.telegram.org/apps](https://my.telegram.org/apps):
+Obtain API credentials from [https://my.telegram.org/apps](https://my.telegram.org/apps).
 
-| Variable | Where to get it |
-|----------|----------------|
-| `TG_APP_ID` | https://my.telegram.org/apps |
-| `TG_API_HASH` | https://my.telegram.org/apps |
+| Variable | Required for | Notes |
+|----------|--------------|-------|
+| `TG_APP_ID` | always | From https://my.telegram.org/apps |
+| `TG_API_HASH` | `auth` only | Not needed to run the server — see below |
+| `TG_SESSION_PATH` | optional | [Choosing the session path](#choosing-the-session-path-tg_session_path) |
+| `TG_READONLY` | optional | [Read-only mode](#read-only-mode-tg_readonly) |
 
-`TG_SESSION_PATH` is optional — see [Choosing the session path](#choosing-the-session-path-tg_session_path).
+### Why `TG_API_HASH` is not needed by the server
+
+`api_hash` is the secret half of your app credentials, and Telegram only ever receives it
+during **login** — `auth.SendCodeRequest`, `auth.ImportBotAuthorizationRequest`, and the QR
+login token request. The connection a running server actually opens sends `InitConnectionRequest`,
+which carries `api_id` and no hash at all.
+
+This server never logs in: it connects to a session that `auth` produced earlier, possibly on a
+different machine. So from 0.7.0 onwards the server (and `check`) start fine without
+`TG_API_HASH`, and a self-documenting placeholder is substituted to satisfy Telethon's
+non-empty-value check. `auth` still requires it and fails with a clear message if it is absent.
+
+Practical upshot: a deployment that only *serves* a session no longer has to ship the secret to
+wherever the MCP client config lives. Setting it anyway changes nothing — existing 0.6.x
+configurations keep working untouched.
 
 ## Installation & Authentication
 
@@ -120,6 +145,45 @@ uvx q0t-telegram-mcp auth --phone +1234567890 --app-id your_app_id --api-hash yo
 ```
 
 You will be prompted to enter the OTP sent to your Telegram app (or SMS). After successful authentication, a session file is saved locally and subsequent connections reuse it automatically.
+
+## Checking a session (`check`)
+
+A session can be revoked at any time from an official Telegram client (Settings → Devices).
+Nothing local changes when that happens, so without asking you would only find out when the
+server starts and the first tool call fails. `check` asks up front:
+
+```bash
+TG_APP_ID=your_app_id uvx q0t-telegram-mcp check
+TG_APP_ID=your_app_id uvx q0t-telegram-mcp check --json
+```
+
+It takes configuration from the same places as every other command, and accepts the same
+override flags: `--app-id`, `--api-hash`, `--session`. `TG_API_HASH` is not required.
+
+| Exit code | Meaning | What to do |
+|-----------|---------|------------|
+| `0` | Session is authorized | Nothing |
+| `1` | Telegram says the session is not authorized | Re-run `auth` |
+| `2` | Could not determine — no session file, or Telegram unreachable | Check the path and the network |
+
+Codes `1` and `2` are deliberately distinct: "this session is dead" and "I could not find out"
+call for opposite reactions, so a script must be able to tell them apart.
+
+Human output names the session file and, when authorized, who is logged in. `--json` emits:
+
+```json
+{"status": "authorized", "authorized": true, "session_path": "/home/you/tg/alice.session",
+ "user": {"id": 777, "username": "alice", "first_name": "Alice", "last_name": null, "phone": "1555…"},
+ "error": null}
+```
+
+Two things worth knowing:
+
+- **`check` makes a real network call.** Telegram therefore records it as activity for that
+  device and refreshes its "last seen" timestamp. It is not a purely local operation.
+- **It will not create or disturb the session.** A missing file reports `2` rather than
+  silently creating an empty session, and the check runs against a throwaway copy — so it is
+  safe to run while a server is holding the real session file open.
 
 ## Session File Location
 
@@ -192,9 +256,56 @@ Add the following to your project's `.mcp.json`:
 
 Claude Code starts the server from your project root, so run `auth` from the same directory before using the tools.
 
+`TG_API_HASH` may be omitted from this block — the server does not need it (see
+[above](#why-tg_api_hash-is-not-needed-by-the-server)). Only `auth` does.
+
+## Read-only mode (`TG_READONLY`)
+
+Set `TG_READONLY` to give a model access to your correspondence without letting it act as you:
+
+```json
+{
+  "mcpServers": {
+    "telegram": {
+      "command": "uvx",
+      "args": ["q0t-telegram-mcp"],
+      "env": {
+        "TG_APP_ID": "your_app_id",
+        "TG_READONLY": "1"
+      }
+    }
+  }
+}
+```
+
+Accepted as "on": `1`, `true`, `yes` (any case). Anything else — including unset — leaves the
+full tool set registered, which is the pre-0.7.0 behaviour.
+
+Writing tools are **not registered at all** in this mode, rather than registered and refusing.
+A tool the client never receives cannot be called, argued with, or worked around; a tool that
+exists and returns an error is a capability the model can see and keep reaching for.
+
+| Available in read-only | Hidden in read-only |
+|------------------------|---------------------|
+| `tg_me`, `tg_dialogs`, `tg_dialog`, `tg_search`, `tg_download` | `tg_send`, `tg_send_file`, `tg_forward`, `tg_edit`, `tg_delete`, `tg_react`, `tg_read`, `tg_click` |
+
+Two entries on the hidden side are worth explaining, because they sound passive:
+
+- **`tg_read`** marks a dialog as read. That destroys unread state and is visible to the other party.
+- **`tg_click`** presses a bot's inline button, which delivers a callback query to that bot — it
+  can trigger anything the bot does, including payments or destructive actions.
+
+`tg_download` stays on the read side: it writes to local disk but changes nothing on the account.
+
 ## Publishing to PyPI (Maintainers)
 
 ```bash
 uv build
-uv publish
+UV_PUBLISH_TOKEN="$(awk '/^password/{print $3; exit}' ~/.pypirc)" \
+  uv publish dist/q0t_telegram_mcp-<version>.tar.gz \
+             dist/q0t_telegram_mcp-<version>-py3-none-any.whl
 ```
+
+`uv publish` does **not** read `~/.pypirc` (unlike `twine`), so the token has to be passed
+explicitly. Name the files of the version being released: `dist/` accumulates older builds, and
+re-uploading an existing version aborts the run.

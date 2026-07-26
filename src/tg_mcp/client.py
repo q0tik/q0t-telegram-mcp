@@ -606,9 +606,31 @@ class TelegramClientWrapper:
             except (ValueError, UsernameNotOccupiedError):
                 raise ValueError(f"Dialog not found: username={username}")
         if name is not None:
+            # The three selectors are advice, not something a caller can be
+            # relied on to follow: a model handed "@alice" picks whichever
+            # field looks plausible, and `name` looks plausible. Resolving it
+            # here costs nothing and removes a failure that depended only on
+            # which argument the same handle arrived in.
+            wanted = name.strip()
+            if wanted.startswith("@"):
+                # A leading @ is unambiguous — no display name carries one.
+                try:
+                    return await self._client.get_entity(wanted.lstrip("@"))
+                except (ValueError, UsernameNotOccupiedError):
+                    pass  # not a live handle; still try the dialog list below
+
             # get_entity() does NOT accept display names — scan cached dialogs instead.
+            handle = wanted.lstrip("@").casefold()
+            by_username = None
             async for dialog in self._client.iter_dialogs():
+                # Display name keeps priority: that is what `name` documents.
                 if dialog.name == name:
                     return dialog.entity
+                if by_username is None and handle:
+                    dialog_handle = getattr(dialog, "username", None)
+                    if isinstance(dialog_handle, str) and dialog_handle.casefold() == handle:
+                        by_username = dialog.entity
+            if by_username is not None:
+                return by_username
             raise ValueError(f"Dialog not found: name={name}")
         raise ValueError("One of dialog_id, username, or name must be provided")

@@ -217,9 +217,13 @@ def mock_telegram_client(
 
     # iter_dialogs async generator — returns a dialog with name "Alice" so
     # name-based resolution in _resolve_entity() can find it in tests.
+    # It carries a username too, like a real dialog does: resolution falls back
+    # to matching that when the caller puts a handle in the `name` slot, and a
+    # bare MagicMock attribute would silently never match.
     async def _iter_dialogs_default():
         iter_dialog = MagicMock()
         iter_dialog.name = "Alice"
+        iter_dialog.username = "alice"
         iter_dialog.entity = entity_mock
         yield iter_dialog
 

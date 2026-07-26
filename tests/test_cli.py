@@ -64,6 +64,35 @@ class TestAuthSessionOption:
         config = patched.call_args.args[0]
         assert config.session_path == Path("/data/tg/alice.session")
 
+    def test_auth_requires_api_hash(self) -> None:
+        """`auth` is the one path that sends the hash to Telegram, so an absent
+        TG_API_HASH must stop it up front — not surface later as a confusing
+        ApiIdInvalidError from the placeholder."""
+        flow_instance = MagicMock()
+        flow_instance.run = AsyncMock(return_value=None)
+        with patch.dict(os.environ, {"TG_APP_ID": "1"}, clear=True), \
+                patch("tg_mcp.AuthFlow", return_value=flow_instance) as patched:
+            result = CliRunner().invoke(cli, ["auth", "--phone", "+15550001234"])
+        assert result.exit_code == 1
+        assert "TG_API_HASH" in result.output
+        patched.assert_not_called()
+
+    def test_auth_reports_missing_app_id_the_same_way(self) -> None:
+        """Same shape of failure, so one missing variable does not look like a
+        crash while the other looks like a handled error."""
+        with patch.dict(os.environ, {"TG_API_HASH": "h"}, clear=True):
+            result = CliRunner().invoke(cli, ["auth", "--phone", "+15550001234"])
+        assert result.exit_code == 1
+        assert "TG_APP_ID" in result.output
+
+    def test_auth_hash_flag_satisfies_the_requirement(self) -> None:
+        """--api-hash is an accepted way to supply it; only *absence* fails."""
+        patched = _run(
+            ["auth", "--phone", "+15550001234", "--api-hash", "fromflag"],
+            {"TG_APP_ID": "1"},
+        )
+        assert patched.call_args.args[0].api_hash == "fromflag"
+
     def test_credential_flags_still_win_over_env(self) -> None:
         """Regression guard: --session is threaded through the same env-writing
         path as --app-id/--api-hash, so it must not disturb them."""

@@ -1,6 +1,6 @@
 [project]
 name = "q0t-telegram-mcp"
-version = "0.6.0"
+version = "0.7.0"
 description = "Telegram MCP server that actually sends messages"
 requires-python = ">=3.12"
 dependencies = [

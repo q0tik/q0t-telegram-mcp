@@ -8,12 +8,13 @@
 
 | Component | File | Purpose |
 |-----------|------|---------|
-| Entry point | `src/tg_mcp/__init__.py` | CLI dispatch: `auth` subcommand vs MCP server mode |
-| MCP server | `src/tg_mcp/server.py` | FastMCP instance, tool registrations, lifespan management |
+| Entry point | `src/tg_mcp/__init__.py` | CLI dispatch: `auth` / `check` subcommands vs MCP server mode |
+| MCP server | `src/tg_mcp/server.py` | FastMCP instance, conditional tool registration (`TG_READONLY`), lifespan management |
 | Telegram client wrapper | `src/tg_mcp/client.py` | Async wrapper around `TelegramClient` |
 | Data models | `src/tg_mcp/models.py` | `UserInfo`, `Dialog`, `Message` dataclasses |
 | Auth CLI | `src/tg_mcp/auth.py` | Interactive auth flow: send code, OTP prompt, 2FA |
-| Configuration | `src/tg_mcp/config.py` | Env var reading (`TG_APP_ID`, `TG_API_HASH`, optional `TG_SESSION_PATH`), session path resolution |
+| Session check | `src/tg_mcp/check.py` | `check` subcommand: is the saved session still authorized? |
+| Configuration | `src/tg_mcp/config.py` | Env var reading (`TG_APP_ID`, optional `TG_API_HASH`/`TG_SESSION_PATH`), session path resolution |
 
 ---
 
@@ -35,6 +36,7 @@ q0t-telegram-mcp/
 │   └── tg_mcp/
 │       ├── __init__.py           ← main() entry point, CLI dispatch
 │       ├── auth.py               ← interactive auth flow
+│       ├── check.py              ← session liveness check
 │       ├── client.py             ← TelegramClientWrapper
 │       ├── config.py             ← Config dataclass, env + path resolution
 │       ├── models.py             ← UserInfo, Dialog, Message
@@ -44,9 +46,13 @@ q0t-telegram-mcp/
 └── tests/
     ├── conftest.py
     ├── test_auth.py
+    ├── test_check.py
+    ├── test_cli.py
     ├── test_client.py
-    ├── test_server.py
-    └── test_models.py
+    ├── test_config.py
+    ├── test_models.py
+    ├── test_readonly.py
+    └── test_server.py
 ```
 
 ---
@@ -238,7 +244,16 @@ All three entity-accepting methods delegate to `_resolve_entity`, which applies 
 
 1. **`dialog_id`** (int) — calls `get_entity(dialog_id)`. Most reliable; raises `ValueError` on failure.
 2. **`username`** (str) — strips a leading `@`, then calls `get_entity(handle)`. Catches `ValueError` and `UsernameNotOccupiedError`.
-3. **`name`** (str) — display names are NOT accepted by `get_entity`. Instead, the method iterates `iter_dialogs()` looking for an exact `dialog.name` match. Slowest path; may match the wrong entity when names are not unique.
+3. **`name`** (str) — display names are NOT accepted by `get_entity`, so this is the slowest path and may match the wrong entity when names are not unique. It resolves in three steps:
+   1. If the value starts with `@` it is unambiguously a handle — no display name carries one — so `get_entity()` is tried first with the `@` stripped. A miss falls through rather than raising.
+   2. `iter_dialogs()` is scanned for an exact `dialog.name` match. This keeps priority, because the display name is what `name` documents.
+   3. Failing that, the first dialog whose `username` matches case-insensitively (handles are case-insensitive on Telegram) is used.
+
+   Steps 1 and 3 exist because the selectors are advice the caller may not follow. A model
+   handed `@alice` picks whichever field looks plausible, and `name` looks plausible; before
+   0.7.0 `username="@alice"` succeeded while `name="@alice"` raised "Dialog not found" for the
+   same dialog in the same list. The widening only converts former failures into matches — a
+   value that resolved before resolves to the same entity now.
 
 Raises `ValueError("One of dialog_id, username, or name must be provided")` if all three are `None`.
 
@@ -340,15 +355,16 @@ Calls:       client.mark_read(dialog_id, username, name)
 
 ```python
 mcp = FastMCP("q0t-telegram-mcp", lifespan=lifespan)
-# tools registered with @mcp.tool() decorators
+# tools registered by register_tools(mcp, readonly=...) — see below
 ```
 
 ### Tool function pattern
 
-All tool functions MUST be `async def` because they await async client methods. Example:
+All tool functions MUST be `async def` because they await async client methods. They are
+defined as plain module-level functions and registered explicitly, *not* with an
+`@mcp.tool()` decorator:
 
 ```python
-@mcp.tool()
 async def tg_me(ctx: Context) -> dict:
     client = ctx.request_context.lifespan_context.client
     user_info = await client.get_me()
@@ -357,10 +373,45 @@ async def tg_me(ctx: Context) -> dict:
 
 The `ctx` parameter is automatically injected by FastMCP when the function signature includes it. All other parameters become the tool's MCP parameter schema.
 
+### Read-only mode and conditional registration
+
+Decorators run at import time, which is too early to consult `TG_READONLY` — reading the
+environment during import would make the registry a side effect of importing the module and
+force any test of it into module reloading. Registration is therefore an explicit function:
+
+```python
+READ_TOOLS  = [tg_me, tg_dialogs, tg_dialog, tg_search, tg_download]
+WRITE_TOOLS = [tg_send, tg_send_file, tg_forward, tg_read, tg_click,
+               tg_react, tg_delete, tg_edit]
+
+def register_tools(server: FastMCP, *, readonly: bool) -> None:
+    for fn in READ_TOOLS:
+        server.add_tool(fn)
+    if readonly:
+        return
+    for fn in WRITE_TOOLS:
+        server.add_tool(fn)
+```
+
+`readonly_from_env()` accepts `1`/`true`/`yes` in any case, after stripping whitespace;
+everything else — including unset and blank — means "off", so no pre-0.7.0 configuration
+changes meaning.
+
+Writing tools are **omitted from the registry**, not registered-and-refusing. A tool that is
+absent from `list_tools` cannot be called; a tool that exists and returns an error is still an
+advertised capability the model can see and keep reaching for.
+
+Two members of `WRITE_TOOLS` are there for non-obvious reasons: `tg_read` marks a dialog read
+(destroys unread state, visible to the other party), and `tg_click` delivers a callback query
+to a bot (can trigger anything that bot does). Both act as the account owner despite reading
+as passive. `tg_download` is classified as a read: it writes to local disk but changes no
+account state.
+
 ### Running
 
 ```python
 def run_server() -> None:
+    register_tools(mcp, readonly=readonly_from_env())
     mcp.run()   # defaults to stdio transport; this call blocks
 ```
 
@@ -380,6 +431,7 @@ def main() -> None:
 ```
 cli (Group)
   ├── auth   [subcommand]  — runs interactive auth
+  ├── check  [subcommand]  — reports whether the saved session is still authorized
   └── (default)           — runs MCP server if no subcommand
 ```
 
@@ -405,7 +457,70 @@ def auth(phone, password, app_id, api_hash, session) -> None:
     asyncio.run(_run_auth(phone, password, app_id, api_hash, session))
 ```
 
-`_run_auth` writes the supplied flags into `os.environ` (that is how "flags beat env" is implemented — there is one resolution path, `Config.from_env`), instantiates `Config.from_env()` and `AuthFlow(config)`, then calls `await auth_flow.run(phone, password)`.
+`_run_auth` writes the supplied flags into `os.environ` (that is how "flags beat env" is implemented — there is one resolution path, `Config.from_env`), builds the config via `_config_or_exit(require_api_hash=True)` and `AuthFlow(config)`, then calls `await auth_flow.run(phone, password)`.
+
+`_config_or_exit` catches `EnvironmentError` from `Config.from_env` and turns it into a
+one-line `Error: …` plus `sys.exit(1)`, matching how `auth.py` reports login failures. Without
+it a missing variable surfaces as a traceback, which reads like a crash rather than a
+configuration problem.
+
+`check` follows the identical flag-into-environment pattern, but passes
+`require_api_hash=False` — it never signs in. Its command body exits with the code the checker
+returns rather than always 0:
+
+```python
+def check(app_id, api_hash, session, as_json) -> None:
+    sys.exit(asyncio.run(_run_check(app_id, api_hash, session, as_json)))
+```
+
+---
+
+## 8a. `check.py` — Session Liveness
+
+A session can be revoked from an official client at any time, and nothing local reflects that.
+Without `check`, the first symptom is the server starting normally and every tool call failing.
+
+### `SessionChecker.run() -> CheckResult`
+
+1. `resolve_session_file(config.session_path)` — locate the file, creating nothing. Both the
+   path as given and the same path plus `.session` are accepted, because Telethon's
+   `SQLiteSession` appends the extension when it is missing.
+2. No file → `CheckResult(status="unknown", …)`. Telethon is never constructed.
+3. Copy the file into a `TemporaryDirectory` and point Telethon at the copy.
+4. `connect()` → `is_user_authorized()` → optionally `get_me()`.
+5. `disconnect()` in a `finally`, with its own exception guard.
+
+### The two constraints that shape it
+
+**Looking must not create.** `SQLiteSession.__init__` opens a cursor and creates its tables
+immediately (`telethon/sessions/sqlite.py:48-49`). Pointing Telethon at a non-existent path
+would therefore create an empty session and then truthfully report it as unauthorized — a
+check that causes the state it reports. The existence test happens before Telethon is touched.
+
+**Checking must not disturb.** The session file is SQLite and a running server may hold it
+open, while Telethon writes to it on connect. Sharing it risks `database is locked` for the
+server and a corrupted session for both. The check therefore reads the original exactly once,
+to copy it, and connects only against that copy; the copy is discarded with its temporary
+directory.
+
+### Three outcomes, three exit codes
+
+| `status` | Exit code | Meaning |
+|----------|-----------|---------|
+| `authorized` | 0 | Telegram accepted the session |
+| `unauthorized` | 1 | Telegram says it is logged out — re-run `auth` |
+| `unknown` | 2 | No session file, or Telegram unreachable |
+
+`unauthorized` and `unknown` are never merged: the first means "re-authenticate", the second
+means "fix the path or the network". A caller that cannot tell them apart will do the wrong one.
+
+`get_me()` failing does **not** downgrade an `authorized` verdict — identity is supplementary,
+and the question the caller asked was already answered.
+
+### Side effect worth documenting
+
+The check makes a real network call. Telegram records it as activity for that device and
+refreshes its "last seen" timestamp. It is not a purely local operation, and the README says so.
 
 ---
 
@@ -442,6 +557,7 @@ config.session_dir().mkdir(parents=True, exist_ok=True)
 | `PhoneCodeExpiredError` | Print error, exit with code 1 |
 | `PasswordHashInvalidError` | Print "Wrong 2FA password", exit with code 1 |
 | `ApiIdInvalidError` | Print "Invalid TG_APP_ID / TG_API_HASH", exit with code 1 |
+| `EnvironmentError` from `Config.from_env` | Handled earlier by `_config_or_exit`: print `Error: …`, exit with code 1 |
 | Other `TelegramError` | Re-raise (unexpected) |
 
 ---
@@ -458,13 +574,15 @@ class Config:
     session_path: Path
 
     @classmethod
-    def from_env(cls) -> "Config":
-        app_id_str = os.environ.get("TG_APP_ID")
-        api_hash   = os.environ.get("TG_API_HASH")
+    def from_env(cls, *, require_api_hash: bool = False) -> "Config":
+        app_id_str = (os.environ.get("TG_APP_ID") or "").strip()
+        api_hash   = (os.environ.get("TG_API_HASH") or "").strip()
         if not app_id_str:
             raise EnvironmentError("TG_APP_ID environment variable is not set")
         if not api_hash:
-            raise EnvironmentError("TG_API_HASH environment variable is not set")
+            if require_api_hash:
+                raise EnvironmentError("TG_API_HASH environment variable is not set. …")
+            api_hash = API_HASH_PLACEHOLDER
         return cls(app_id=int(app_id_str), api_hash=api_hash,
                    session_path=cls._session_path_from_env())
 
@@ -478,6 +596,34 @@ class Config:
     def session_dir(self) -> Path:
         return self.session_path.parent
 ```
+
+### Why `TG_API_HASH` is optional
+
+`TG_APP_ID` is always required — it travels in `InitConnectionRequest` on every connection.
+`TG_API_HASH` is required only when *require_api_hash* is set, which only `auth` does.
+
+Verified against Telethon 1.44 by reading the source; re-verify before trusting it on a newer
+version, and note the assertions in `TestTelethonPlaceholderAssumption` exist to make a change
+here fail loudly:
+
+| Location | What it does with `api_hash` |
+|----------|------------------------------|
+| `client/auth.py:447` | `auth.SendCodeRequest` — phone login |
+| `client/auth.py:350` | `auth.ImportBotAuthorizationRequest` — bot login |
+| `tl/custom/qrlogin.py:19` | `auth.ExportLoginTokenRequest` — QR login |
+| `client/telegrambaseclient.py:368` | `InitConnectionRequest` — **`api_id` only, no hash**; this is what every persistent connection sends |
+| `client/telegrambaseclient.py:273` | Constructor: rejects empty/`None`, validates nothing else |
+| `client/telegrambaseclient.py:924` | CDN client for cross-DC downloads (reached via `tg_download`) — re-enters that same constructor |
+
+All three requests that put the hash on the wire are logins. This server never logs in:
+`client.py` calls `connect()`, never `start()` or `sign_in()`. Correctness of the value cannot
+be checked locally anyway, because it never leaves the process.
+
+Hence `API_HASH_PLACEHOLDER` — a non-empty string that satisfies the constructor and reads
+unmistakably as an absent value wherever it surfaces (tracebacks, debug dumps, `ps` output).
+`Config.has_real_api_hash` distinguishes it for any caller that needs to know.
+
+Blank and whitespace-only values count as unset, the same rule `_session_path_from_env` uses.
 
 ### Session path resolution
 

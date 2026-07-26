@@ -71,6 +71,51 @@ class TestPm:
         assert _pm("MD") == "md"
 
 
+class TestConnectWithoutApiHash:
+    """The server half of a deployment must work without the secret half of
+    the app credentials, because it never signs in — it serves a session that
+    was created elsewhere, often on another machine."""
+
+    async def test_connect_works_with_the_placeholder_hash(
+        self, mock_telegram_client
+    ) -> None:
+        import os
+        from unittest.mock import patch as _patch
+
+        from tg_mcp.config import API_HASH_PLACEHOLDER
+
+        env = {k: v for k, v in os.environ.items() if k != "TG_API_HASH"}
+        env["TG_APP_ID"] = "12345"
+        with _patch.dict(os.environ, env, clear=True):
+            config = Config.from_env()
+        wrapper = TelegramClientWrapper(config)
+
+        with patch("tg_mcp.client.TelegramClient",
+                   return_value=mock_telegram_client) as constructed:
+            await wrapper.connect()
+
+        # The placeholder reaches Telethon unchanged: it is only there to
+        # satisfy the constructor's non-emptiness check, never to be correct.
+        assert constructed.call_args.args[2] == API_HASH_PLACEHOLDER
+
+    async def test_a_configured_hash_still_reaches_telethon(
+        self, mock_telegram_client
+    ) -> None:
+        """0.6.x deployments that do set TG_API_HASH behave identically."""
+        import os
+        from unittest.mock import patch as _patch
+
+        with _patch.dict(os.environ, {"TG_APP_ID": "12345", "TG_API_HASH": "realhash"}):
+            config = Config.from_env()
+        wrapper = TelegramClientWrapper(config)
+
+        with patch("tg_mcp.client.TelegramClient",
+                   return_value=mock_telegram_client) as constructed:
+            await wrapper.connect()
+
+        assert constructed.call_args.args[2] == "realhash"
+
+
 class TestConnect:
     """Tests for TelegramClientWrapper.connect()."""
 
@@ -632,6 +677,76 @@ class TestIsAuthorized:
         mock_telegram_client.is_user_authorized.return_value = False
         result = await mock_client_wrapper.is_authorized()
         assert result is False
+
+
+class TestResolveEntityHandleInNameSlot:
+    """A @handle put in the `name` slot must still resolve.
+
+    The three selectors are a hint to the caller, not a contract the caller can
+    be relied on to honour: an LLM handed "@alice" picks whichever field looks
+    plausible, and `name` looks plausible. Before this, `username="@alice"`
+    worked while `name="@alice"` failed with "Dialog not found" — for the same
+    dialog, sitting in the same list, differing only by which argument was used.
+    """
+
+    async def test_at_prefixed_name_resolves_as_a_username(
+        self, mock_client_wrapper, mock_telegram_client
+    ) -> None:
+        """A leading @ makes the string unambiguously a handle, whatever slot
+        it arrived in."""
+        mock_telegram_client.get_entity.reset_mock()
+        await mock_client_wrapper._resolve_entity(name="@alice")
+        mock_telegram_client.get_entity.assert_awaited_once_with("alice")
+
+    async def test_bare_handle_in_name_slot_matches_dialog_username(
+        self, mock_client_wrapper, mock_telegram_client
+    ) -> None:
+        """Without the @ the string is ambiguous, so it is not sent to Telegram
+        as a handle — but a dialog of yours whose username matches is still a
+        better answer than "not found"."""
+        entity = await mock_client_wrapper._resolve_entity(name="alice")
+        assert entity is not None
+
+    async def test_username_match_is_case_insensitive(
+        self, mock_client_wrapper, mock_telegram_client
+    ) -> None:
+        """Telegram handles are case-insensitive; "@Alice" and "@alice" are one
+        account."""
+        entity = await mock_client_wrapper._resolve_entity(name="ALICE")
+        assert entity is not None
+
+    async def test_display_name_still_wins_over_username(
+        self, mock_client_wrapper, mock_telegram_client
+    ) -> None:
+        """Regression guard: the documented meaning of `name` is the display
+        name, and that lookup must keep priority."""
+        mock_telegram_client.get_entity.reset_mock()
+        entity = await mock_client_wrapper._resolve_entity(name="Alice")
+        assert entity is not None
+        mock_telegram_client.get_entity.assert_not_awaited()
+
+    async def test_unknown_name_still_raises(
+        self, mock_client_wrapper, mock_telegram_client
+    ) -> None:
+        """Widening the search must not turn a miss into a wrong match."""
+        with pytest.raises(ValueError, match="Dialog not found: name=Nobody"):
+            await mock_client_wrapper._resolve_entity(name="Nobody")
+
+    async def test_unknown_at_handle_reports_the_name_selector(
+        self, mock_client_wrapper, mock_telegram_client
+    ) -> None:
+        """The error should name the argument the caller actually passed."""
+        mock_telegram_client.get_entity.side_effect = ValueError("not found")
+        with pytest.raises(ValueError, match="Dialog not found: name=@ghost"):
+            await mock_client_wrapper._resolve_entity(name="@ghost")
+
+    async def test_send_message_accepts_an_at_handle_as_name(
+        self, mock_client_wrapper, mock_telegram_client
+    ) -> None:
+        """End of the path the bug was reported on."""
+        mock_telegram_client.get_entity.reset_mock()
+        await mock_client_wrapper.send_message(text="hi", name="@alice")
+        mock_telegram_client.send_message.assert_awaited()
 
 
 class TestResolveEntity:
