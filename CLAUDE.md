@@ -37,6 +37,7 @@ q0t-telegram-mcp/
 │       └── server.py         ← FastMCP instance, tool registrations
 ├── tasks/
 │   └── task-1.md
+├── CHANGELOG.md
 ├── tests/
 │   ├── conftest.py
 │   ├── test_auth.py
@@ -44,9 +45,13 @@ q0t-telegram-mcp/
 │   ├── test_cli.py
 │   ├── test_client.py
 │   ├── test_config.py
+│   ├── test_http_integration.py
 │   ├── test_models.py
 │   ├── test_readonly.py
-│   └── test_server.py
+│   ├── test_server.py
+│   ├── test_server_startup.py
+│   ├── test_shared_client.py
+│   └── test_transport.py
 ├── pyproject.toml
 └── README.md
 ```
@@ -65,6 +70,17 @@ Read tools (`tg_me`, `tg_dialogs`, `tg_dialog`, `tg_search`, `tg_download`) and 
 (everything else) are registered separately: `TG_READONLY` omits the writers entirely. When
 adding a tool, put it in `READ_TOOLS` or `WRITE_TOOLS` in `server.py` — a test fails if it is
 in neither.
+
+## Transports
+
+stdio is the default. `--transport http` serves streamable HTTP so several clients share one
+process — and therefore one Telethon session, which is the only safe arrangement (two
+processes on one session file give `database is locked`; copies of the file give
+`AUTH_KEY_DUPLICATED` and a real logout).
+
+**The trap:** FastMCP enters the lifespan per *MCP session*, not per process, so anything
+built inside `lifespan` is built once per connected client. The Telegram client therefore
+lives in the module-level `SharedTelegramClient`, not in `lifespan`. Do not move it back.
 
 ## Agent Workflow
 

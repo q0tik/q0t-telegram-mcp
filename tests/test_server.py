@@ -15,16 +15,28 @@ The MCP Context object is mocked so tools can be called as plain async functions
 
 from __future__ import annotations
 
-import dataclasses
 import inspect
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock
 
 from tg_mcp.client import TelegramClientWrapper
 from tg_mcp.models import Dialog, Message, UserInfo
-from tg_mcp.server import tg_me, tg_dialogs, tg_dialog, tg_send, tg_send_file, tg_forward, tg_read, tg_click, tg_react, tg_delete, tg_edit, tg_search, tg_download
-
+from tg_mcp.server import (
+    tg_click,
+    tg_delete,
+    tg_dialog,
+    tg_dialogs,
+    tg_download,
+    tg_edit,
+    tg_forward,
+    tg_me,
+    tg_react,
+    tg_read,
+    tg_search,
+    tg_send,
+    tg_send_file,
+)
 
 # ---------------------------------------------------------------------------
 # Helper: build a mock MCP Context whose lifespan_context.client is the
@@ -90,7 +102,8 @@ class TestRunServer:
         run_server() calls mcp.run() which starts the MCP server.
         """
         from unittest.mock import patch
-        from tg_mcp.server import run_server, mcp
+
+        from tg_mcp.server import mcp, run_server
 
         with patch.object(mcp, "run") as mock_run:
             run_server()

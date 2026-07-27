@@ -7,7 +7,6 @@ Telethon object shapes are based on the real API as documented in docs/architect
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -27,8 +26,9 @@ try:
 except ImportError:
     TelegramClientWrapper = None  # type: ignore[assignment,misc]
 
-from telethon import TelegramClient
+from datetime import UTC
 
+from telethon import TelegramClient
 
 # ---------------------------------------------------------------------------
 # Config fixture
@@ -92,7 +92,7 @@ def mock_telegram_dialog() -> MagicMock:
     Attributes reflect the real Telethon Dialog shape:
       id, name, unread_count, is_user, is_group, is_channel, message, date
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     dialog = MagicMock()
     dialog.id = 987654321
@@ -112,7 +112,7 @@ def mock_telegram_dialog() -> MagicMock:
     last_msg.text = "Hey there!"
     dialog.message = last_msg
 
-    dialog.date = datetime(2026, 3, 8, 12, 0, 0, tzinfo=timezone.utc)
+    dialog.date = datetime(2026, 3, 8, 12, 0, 0, tzinfo=UTC)
     return dialog
 
 
@@ -125,11 +125,11 @@ def mock_telegram_message() -> MagicMock:
       id, date, text, out
     The get_sender() method is async and returns a user-like mock.
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     msg = MagicMock()
     msg.id = 42
-    msg.date = datetime(2026, 3, 8, 11, 30, 0, tzinfo=timezone.utc)
+    msg.date = datetime(2026, 3, 8, 11, 30, 0, tzinfo=UTC)
     msg.text = "Hello, world!"
     msg.out = False
 

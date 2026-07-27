@@ -1,16 +1,19 @@
+import asyncio
 import dataclasses
+import importlib.metadata
 import os
+import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Annotated, Optional
 
-from mcp.server.fastmcp import FastMCP
-from mcp.server.fastmcp import Context
+from mcp.server.fastmcp import Context, FastMCP
 from pydantic import Field, WithJsonSchema
+from starlette.responses import JSONResponse
 
 from .client import TelegramClientWrapper
-from .config import Config
+from .config import Config, TransportConfig
 
 
 @dataclass
@@ -20,21 +23,89 @@ class AppContext:
     client: TelegramClientWrapper
 
 
+class SharedTelegramClient:
+    """One Telethon client per *process*, shared by every MCP session.
+
+    FastMCP enters the lifespan per session, not per process: the low-level
+    server does ``enter_async_context(self.lifespan(self))`` inside
+    ``Server.run()``, and the streamable-HTTP session manager calls
+    ``Server.run()`` once per connecting client. Under stdio that distinction
+    never mattered — one process served one client — but under HTTP it is the
+    difference between working and reproducing the exact bug this transport
+    exists to fix.
+
+    Two Telethon clients on one session file fail in two ways: SQLite raises
+    ``database is locked`` because Telethon *writes* to the session on connect,
+    and the same ``auth_key`` used from two places at once can trigger
+    ``AUTH_KEY_DUPLICATED``, which logs the account out for real and needs a
+    fresh sign-in. Neither is recoverable by copying the session file, because
+    the auth key is what is duplicated.
+
+    Reference-counted rather than created-once-forever so stdio keeps its
+    previous lifecycle exactly: one session, connect on entry, disconnect on
+    exit.
+    """
+
+    def __init__(self) -> None:
+        self._lock = asyncio.Lock()
+        self._client: TelegramClientWrapper | None = None
+        self._sessions = 0
+
+    @property
+    def active_sessions(self) -> int:
+        """How many MCP sessions currently hold the client."""
+        return self._sessions
+
+    async def acquire(self) -> TelegramClientWrapper:
+        """Return the process-wide client, connecting it on first use.
+
+        The lock matters: two clients connecting at the same instant is the
+        precise scenario that broke under stdio, and an unguarded
+        check-then-create would let both through.
+        """
+        async with self._lock:
+            if self._client is None:
+                client = TelegramClientWrapper(Config.from_env())
+                # Only count and cache a client that actually connected — a
+                # cached broken one would turn a single bad startup into a
+                # permanently dead server.
+                await client.connect()
+                self._client = client
+            self._sessions += 1
+            return self._client
+
+    async def release(self) -> None:
+        """Release one session's hold, disconnecting when the last one leaves."""
+        async with self._lock:
+            if self._sessions == 0:
+                return
+            self._sessions -= 1
+            if self._sessions == 0 and self._client is not None:
+                client, self._client = self._client, None
+                await client.disconnect()
+
+
+#: Process-wide client. Module-level so every MCP session reaches the same one.
+shared_client = SharedTelegramClient()
+
+
 @asynccontextmanager
 async def lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
-    """Connect to Telegram on startup and disconnect on shutdown.
+    """Hand this session the process-wide Telegram client.
+
+    Entered once per MCP session. Under stdio that is once per process; under
+    HTTP it is once per connected client, which is why the client itself is
+    shared rather than built here.
 
     Raises:
-        EnvironmentError: If ``TG_APP_ID`` or ``TG_API_HASH`` is not set.
+        EnvironmentError: If ``TG_APP_ID`` is not set.
         RuntimeError: If no authorized session exists (run ``auth`` first).
     """
-    config = Config.from_env()
-    client = TelegramClientWrapper(config)
-    await client.connect()
+    client = await shared_client.acquire()
     try:
         yield AppContext(client=client)
     finally:
-        await client.disconnect()
+        await shared_client.release()
 
 
 mcp = FastMCP("q0t-telegram-mcp", lifespan=lifespan)
@@ -340,6 +411,17 @@ WRITE_TOOLS = [
 
 _READONLY_TRUE = {"1", "true", "yes"}
 
+#: The shipped DNS-rebinding allowances, captured before anything widens them so
+#: a later reconfiguration can be rebuilt from a clean base.
+_BASE_TRANSPORT_SECURITY = (
+    tuple(mcp.settings.transport_security.allowed_hosts)
+    if mcp.settings.transport_security
+    else (),
+    tuple(mcp.settings.transport_security.allowed_origins)
+    if mcp.settings.transport_security
+    else (),
+)
+
 
 def readonly_from_env() -> bool:
     """Return True when ``TG_READONLY`` asks for a read-only tool set.
@@ -358,16 +440,160 @@ def register_tools(server: FastMCP, *, readonly: bool) -> None:
     appear in ``list_tools`` at all. Registering them and refusing at call time
     would still advertise the capability to the model — and an advertised tool
     gets attempted, argued with, and worked around. Absent is unambiguous.
+
+    Idempotent: registering a name that is already present is skipped rather
+    than re-added, which would only emit a duplicate-tool warning and change
+    nothing. A genuine collision between two different functions is caught by
+    the partition test instead.
     """
-    for fn in READ_TOOLS:
-        server.add_tool(fn)
-    if readonly:
+    registered = set(server._tool_manager._tools)
+    tools = READ_TOOLS if readonly else READ_TOOLS + WRITE_TOOLS
+    for fn in tools:
+        if fn.__name__ not in registered:
+            server.add_tool(fn)
+
+
+def _package_version() -> str:
+    """Best-effort package version for /health."""
+    try:
+        return importlib.metadata.version("q0t-telegram-mcp")
+    except importlib.metadata.PackageNotFoundError:  # pragma: no cover
+        return "unknown"
+
+
+@mcp.custom_route("/health", methods=["GET"])
+async def health(request):
+    """Liveness probe: is the process up, without opening an MCP session.
+
+    Deliberately dull. It answers before any session exists and is reachable by
+    anything that can reach the port, so it reports only what is already public
+    from the outside: that the process is listening, and which version it is.
+    Never configuration, credentials, or who is logged in.
+    """
+    return JSONResponse(
+        {
+            "status": "ok",
+            "name": "q0t-telegram-mcp",
+            "version": _package_version(),
+            "active_sessions": shared_client.active_sessions,
+        }
+    )
+
+
+#: uvicorn's stock config sends access logs to stdout. Under stdio that would
+#: corrupt the MCP stream outright; under HTTP stdout is free, but keeping every
+#: diagnostic on stderr means one place to look regardless of transport.
+_STDERR_LOG_CONFIG = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "default": {
+            "()": "uvicorn.logging.DefaultFormatter",
+            "fmt": "%(levelprefix)s %(message)s",
+        },
+        "access": {
+            "()": "uvicorn.logging.AccessFormatter",
+            "fmt": '%(levelprefix)s %(client_addr)s - "%(request_line)s" %(status_code)s',
+        },
+    },
+    "handlers": {
+        "default": {
+            "formatter": "default",
+            "class": "logging.StreamHandler",
+            "stream": "ext://sys.stderr",
+        },
+        "access": {
+            "formatter": "access",
+            "class": "logging.StreamHandler",
+            "stream": "ext://sys.stderr",
+        },
+    },
+    "loggers": {
+        "uvicorn": {"handlers": ["default"], "level": "INFO", "propagate": False},
+        "uvicorn.error": {"level": "INFO"},
+        "uvicorn.access": {"handlers": ["access"], "level": "INFO", "propagate": False},
+    },
+}
+
+
+def _serve_http(server: FastMCP, config: TransportConfig) -> None:
+    """Serve *server* over HTTP until stopped.
+
+    uvicorn is driven directly rather than through ``FastMCP.run`` because that
+    path hardcodes its own uvicorn config and leaves no way to redirect logging
+    to stderr.
+    """
+    import uvicorn
+
+    app = server.sse_app() if config.transport == "sse" else server.streamable_http_app()
+    uvicorn.Server(
+        uvicorn.Config(
+            app,
+            host=config.host,
+            port=config.port,
+            log_level=server.settings.log_level.lower(),
+            log_config=_STDERR_LOG_CONFIG,
+        )
+    ).run()
+
+
+def _apply_http_settings(server: FastMCP, config: TransportConfig) -> None:
+    """Point FastMCP at the resolved address and keep it usable there.
+
+    Rebuilt from the shipped defaults on every call rather than appended to, so
+    that applying two configurations in one process (tests do; a future reload
+    might) cannot accumulate stale allowances from an address no longer in use.
+    """
+    server.settings.host = config.host
+    server.settings.port = config.port
+
+    security = server.settings.transport_security
+    if security is None:  # pragma: no cover - only when auth is reconfigured
         return
-    for fn in WRITE_TOOLS:
-        server.add_tool(fn)
+    base_hosts, base_origins = _BASE_TRANSPORT_SECURITY
+    if config.is_loopback:
+        security.allowed_hosts = list(base_hosts)
+        security.allowed_origins = list(base_origins)
+        return
+    # DNS-rebinding protection ships allowing localhost Host headers only, so a
+    # deliberate off-host bind would otherwise reject every request that reached
+    # it. Warning about the bind and then breaking it is the worst of both
+    # worlds; the user asked for this address.
+    security.allowed_hosts = list(base_hosts) + [config.host, f"{config.host}:*"]
+    security.allowed_origins = list(base_origins) + [
+        f"http://{config.host}", f"http://{config.host}:*",
+    ]
 
 
-def run_server() -> None:
-    """Start the MCP server. Blocks until the server is stopped."""
+def _warn_if_exposed(config: TransportConfig) -> None:
+    """Say plainly what binding off-loopback means.
+
+    This server grants whoever reaches it full control of a Telegram account and
+    authenticates nobody, so the address it listens on *is* the access control.
+    """
+    if config.is_loopback:
+        return
+    print(
+        f"WARNING: listening on {config.host}:{config.port}, which is not loopback.\n"
+        "         This server has no authentication and grants full access to the\n"
+        "         Telegram account behind its session. Anyone who can reach this\n"
+        "         port can read and send messages as that account.",
+        file=sys.stderr,
+    )
+
+
+def run_server(config: TransportConfig | None = None) -> None:
+    """Start the MCP server. Blocks until the server is stopped.
+
+    With no *config* the transport is resolved from the environment, which
+    defaults to stdio — so calling the package with no arguments behaves exactly
+    as it did before 0.8.0.
+    """
+    config = config or TransportConfig.resolve()
     register_tools(mcp, readonly=readonly_from_env())
-    mcp.run()
+    if not config.is_http:
+        mcp.run()
+        return
+    _apply_http_settings(mcp, config)
+    _warn_if_exposed(config)
+    _serve_http(mcp, config)

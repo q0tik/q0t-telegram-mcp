@@ -18,9 +18,8 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from telethon.tl.functions.messages import SendReactionRequest
-
 import pytest
+from telethon.tl.functions.messages import SendReactionRequest
 
 from tg_mcp.client import TelegramClientWrapper, _pm
 from tg_mcp.config import Config
@@ -981,8 +980,10 @@ class TestGetDialogsUsernameField:
 # ---------------------------------------------------------------------------
 
 
+from datetime import UTC
 from types import SimpleNamespace
-from tg_mcp.client import _extract_buttons, _describe_media
+
+from tg_mcp.client import _describe_media, _extract_buttons
 from tg_mcp.models import Button
 
 
@@ -1051,11 +1052,11 @@ def _fake_click_message(buttons, msg_id: int = 42, text: str = "msg text"):
     get_sender), plus .buttons and an AsyncMock .click() as click_button()
     requires.
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     msg = MagicMock()
     msg.id = msg_id
-    msg.date = datetime(2026, 3, 8, 11, 30, 0, tzinfo=timezone.utc)
+    msg.date = datetime(2026, 3, 8, 11, 30, 0, tzinfo=UTC)
     msg.text = text
     msg.out = False
     msg.buttons = buttons
@@ -1428,12 +1429,13 @@ def _fake_search_message(msg_id: int, text: str, chat_id: int, chat_name: str):
     against telethon's own types, so a MagicMock always yields '' and can't
     be used to prove chat_name is populated correctly.
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
+
     from telethon.tl.types import User
 
     msg = MagicMock()
     msg.id = msg_id
-    msg.date = datetime(2026, 7, 13, 0, 0, 0, tzinfo=timezone.utc)
+    msg.date = datetime(2026, 7, 13, 0, 0, 0, tzinfo=UTC)
     msg.text = text
     msg.out = False
 
@@ -1626,6 +1628,7 @@ class TestClassifyButton:
 
     def test_url_button_gets_url_kind_and_url(self) -> None:
         from telethon.tl.types import KeyboardButtonUrl
+
         from tg_mcp.client import _classify_button
 
         out = _classify_button(self._btn(KeyboardButtonUrl(text="Open", url="https://example.com")))
@@ -1637,6 +1640,7 @@ class TestClassifyButton:
         MessageButton.url property returns None for them — they used to fall through
         to kind='other'."""
         from telethon.tl.types import KeyboardButtonWebView
+
         from tg_mcp.client import _classify_button
 
         out = _classify_button(self._btn(KeyboardButtonWebView(text="App", url="https://app.example")))
@@ -1645,6 +1649,7 @@ class TestClassifyButton:
 
     def test_simple_webview_button_is_webview(self) -> None:
         from telethon.tl.types import KeyboardButtonSimpleWebView
+
         from tg_mcp.client import _classify_button
 
         out = _classify_button(self._btn(KeyboardButtonSimpleWebView(text="App", url="https://s.example")))
@@ -1653,6 +1658,7 @@ class TestClassifyButton:
 
     def test_callback_button_is_callback_with_no_url(self) -> None:
         from telethon.tl.types import KeyboardButtonCallback
+
         from tg_mcp.client import _classify_button
 
         out = _classify_button(self._btn(KeyboardButtonCallback(text="Next", data=b"next")))
@@ -1663,6 +1669,7 @@ class TestClassifyButton:
         """Bottom reply keyboards are not clickable via tg_click; they must not be
         advertised as callback targets."""
         from telethon.tl.types import KeyboardButton
+
         from tg_mcp.client import _classify_button
 
         out = _classify_button(self._btn(KeyboardButton(text="Menu")))
@@ -1686,14 +1693,14 @@ class TestClickButtonNonCallback:
 
     @staticmethod
     def _msg_with(raw_button, msg_id=42):
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         b = MagicMock()
         b.text = "Target"
         b.button = raw_button
         msg = MagicMock()
         msg.id = msg_id
-        msg.date = datetime(2026, 3, 8, tzinfo=timezone.utc)
+        msg.date = datetime(2026, 3, 8, tzinfo=UTC)
         msg.text = "bot msg"
         msg.out = False
         msg.buttons = [[b]]
@@ -1777,6 +1784,7 @@ class TestExtractReactions:
 
     def test_emoji_reaction_maps_emoji_and_count(self) -> None:
         from telethon.tl.types import ReactionEmoji
+
         from tg_mcp.client import _extract_reactions
 
         out = _extract_reactions(self._msg([self._count(ReactionEmoji(emoticon="\U0001F44D"), 3)]))
@@ -1787,6 +1795,7 @@ class TestExtractReactions:
 
     def test_chosen_order_none_means_not_chosen_by_me(self) -> None:
         from telethon.tl.types import ReactionEmoji
+
         from tg_mcp.client import _extract_reactions
 
         out = _extract_reactions(self._msg([self._count(ReactionEmoji(emoticon="\U0001F44D"), 3, None)]))
@@ -1799,6 +1808,7 @@ class TestExtractReactions:
         as not chosen.
         """
         from telethon.tl.types import ReactionEmoji
+
         from tg_mcp.client import _extract_reactions
 
         out = _extract_reactions(self._msg([self._count(ReactionEmoji(emoticon="\U0001F44D"), 1, 0)]))
@@ -1806,6 +1816,7 @@ class TestExtractReactions:
 
     def test_custom_emoji_reaction_carries_document_id(self) -> None:
         from telethon.tl.types import ReactionCustomEmoji
+
         from tg_mcp.client import _extract_reactions
 
         out = _extract_reactions(self._msg([self._count(ReactionCustomEmoji(document_id=555), 2)]))
@@ -1815,6 +1826,7 @@ class TestExtractReactions:
 
     def test_paid_reaction_is_labelled(self) -> None:
         from telethon.tl.types import ReactionPaid
+
         from tg_mcp.client import _extract_reactions
 
         out = _extract_reactions(self._msg([self._count(ReactionPaid(), 7)]))
@@ -1823,6 +1835,7 @@ class TestExtractReactions:
 
     def test_multiple_reactions_preserve_order(self) -> None:
         from telethon.tl.types import ReactionEmoji
+
         from tg_mcp.client import _extract_reactions
 
         out = _extract_reactions(self._msg([

@@ -7,7 +7,7 @@ import click
 
 from .auth import AuthFlow
 from .check import SessionChecker
-from .config import Config
+from .config import Config, TransportConfig
 from .server import run_server
 
 
@@ -49,11 +49,29 @@ def _config_or_exit(*, require_api_hash: bool) -> Config:
 
 
 @click.group(invoke_without_command=True)
+@click.option("--transport", type=click.Choice(["stdio", "http", "streamable-http", "sse"]),
+              default=None,
+              help="How to serve MCP. Default stdio (overrides TG_TRANSPORT). "
+                   "Use http to let several clients share one process and one "
+                   "Telegram session.")
+@click.option("--host", default=None,
+              help="Address to bind in http/sse mode (overrides TG_HOST); "
+                   "default 127.0.0.1. Binding off-loopback exposes the account.")
+@click.option("--port", default=None, type=int,
+              help="Port to bind in http/sse mode (overrides TG_PORT); default 8765")
 @click.pass_context
-def cli(ctx: click.Context) -> None:
+def cli(ctx: click.Context, transport: str | None, host: str | None,
+        port: int | None) -> None:
     """q0t-telegram-mcp: Telegram MCP server that actually sends messages."""
-    if ctx.invoked_subcommand is None:
-        run_server()
+    if ctx.invoked_subcommand is not None:
+        return
+    try:
+        config = TransportConfig.resolve(transport=transport, host=host, port=port)
+    except ValueError as e:
+        # Same shape as the other configuration errors: a line, not a traceback.
+        print(f"Error: {e}")
+        sys.exit(1)
+    run_server(config)
 
 
 @cli.command()

@@ -21,7 +21,6 @@ import os
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 from click.testing import CliRunner
 
 from tg_mcp import cli
@@ -280,14 +279,14 @@ class TestCheckCommand:
         assert patched.call_args.args[0].has_real_api_hash is False
 
     def test_session_flag_overrides_env(self, tmp_path: Path) -> None:
-        invoked, patched = self._invoke(
+        _, patched = self._invoke(
             ["--session", "/data/tg/bob.session"],
             {"TG_APP_ID": "1", "TG_SESSION_PATH": "/data/tg/alice.session"},
             CheckResult(status="authorized", session_path=Path("/data/tg/bob.session")))
         assert patched.call_args.args[0].session_path == Path("/data/tg/bob.session")
 
     def test_app_id_flag_overrides_env(self, tmp_path: Path) -> None:
-        invoked, patched = self._invoke(
+        _, patched = self._invoke(
             ["--app-id", "42"], {"TG_APP_ID": "1"},
             CheckResult(status="authorized", session_path=tmp_path / "a"))
         assert patched.call_args.args[0].app_id == 42

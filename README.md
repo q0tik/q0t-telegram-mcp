@@ -100,6 +100,8 @@ Obtain API credentials from [https://my.telegram.org/apps](https://my.telegram.o
 | `TG_API_HASH` | `auth` only | Not needed to run the server — see below |
 | `TG_SESSION_PATH` | optional | [Choosing the session path](#choosing-the-session-path-tg_session_path) |
 | `TG_READONLY` | optional | [Read-only mode](#read-only-mode-tg_readonly) |
+| `TG_TRANSPORT` | optional | `stdio` (default) or `http` — [Several clients on one machine](#several-clients-on-one-machine) |
+| `TG_HOST` / `TG_PORT` | optional | Bind address in http mode; defaults to `127.0.0.1:8765` |
 
 ### Why `TG_API_HASH` is not needed by the server
 
@@ -258,6 +260,88 @@ Claude Code starts the server from your project root, so run `auth` from the sam
 
 `TG_API_HASH` may be omitted from this block — the server does not need it (see
 [above](#why-tg_api_hash-is-not-needed-by-the-server)). Only `auth` does.
+
+## Several clients on one machine
+
+**If two agent runs can overlap, you need HTTP mode.** Not as an optimisation — the default
+stdio setup corrupts your login when they do.
+
+### What goes wrong
+
+MCP clients spawn a stdio server **per run**. Two runs at once means two processes of this
+package against one Telethon session file, and both die:
+
+```
+sqlite3.OperationalError: database is locked
+  telethon/sessions/sqlite.py  c.execute('delete from sessions')
+```
+
+Telethon *writes* to the session when it starts — it does not merely read it.
+
+### Why the obvious workarounds are worse
+
+Giving each process its own copy of the session file removes the lock error and replaces it
+with a far worse one. The copies share an `auth_key`, and Telegram invalidates a key it sees
+used from two places at once: `AUTH_KEY_DUPLICATED`. The account is then genuinely logged out
+and has to sign in again. Telethon documents this as a protection that cannot be turned off —
+if you want several clients, you make several *sessions*, not several copies of one.
+
+| Workaround | Lock error | Account survives |
+|------------|-----------|------------------|
+| Copy the session file per process | fixed | ❌ `AUTH_KEY_DUPLICATED` |
+| `StringSession` in the environment | fixed | ❌ same key, same outcome — and the secret spreads |
+| A separate login per process | fixed | ✅ but that is N accounts, not N clients |
+| **One process, clients over HTTP** | **fixed** | **✅** |
+
+### How to run it
+
+Start one long-lived owner of the session:
+
+```bash
+TG_APP_ID=your_app_id uvx q0t-telegram-mcp --transport http --port 8765
+```
+
+Then point every client at it instead of letting them spawn their own:
+
+```json
+{
+  "mcpServers": {
+    "telegram": {
+      "url": "http://127.0.0.1:8765/mcp"
+    }
+  }
+}
+```
+
+The exact key differs per client — `url`, `httpUrl`, or `codex mcp add --url`; all of them
+speak streamable HTTP.
+
+| Variable | Flag | Default | Meaning |
+|----------|------|---------|---------|
+| `TG_TRANSPORT` | `--transport` | `stdio` | `stdio`, `http` (or `streamable-http`), `sse` |
+| `TG_HOST` | `--host` | `127.0.0.1` | Address to bind in http/sse mode |
+| `TG_PORT` | `--port` | `8765` | Port to bind in http/sse mode |
+
+Flags win over environment variables. **stdio remains the default**, so existing configs that
+invoke the package with no arguments are unaffected.
+
+`GET /health` returns `200` with the version and the number of connected MCP sessions, so a
+supervisor can tell the process is up without opening an MCP session:
+
+```json
+{"status": "ok", "name": "q0t-telegram-mcp", "version": "0.8.0", "active_sessions": 2}
+```
+
+### ⚠️ Do not expose the port
+
+The default bind is `127.0.0.1` deliberately. **This server has no authentication of its
+own** — whoever can reach the port can read and send messages as the account behind the
+session. The listen address is the only access control there is.
+
+`--host 0.0.0.0` is permitted, because you may be binding inside a container whose network is
+already isolated, but it prints a warning at startup and you are then responsible for
+whatever can reach that port. Do not put it on a public interface without something in front
+of it.
 
 ## Read-only mode (`TG_READONLY`)
 

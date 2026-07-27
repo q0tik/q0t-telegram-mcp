@@ -41,7 +41,6 @@ class TestConfigFromEnv:
         """
         Config.from_env() raises EnvironmentError when TG_APP_ID is not set.
         """
-        env = {"TG_API_HASH": "testhash123"}
         # Remove TG_APP_ID from environment
         env_without_app_id = {k: v for k, v in os.environ.items() if k != "TG_APP_ID"}
         env_without_app_id["TG_API_HASH"] = "testhash123"

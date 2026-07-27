@@ -42,7 +42,7 @@ def _classify_button(b) -> Button:
     return Button(text=b.text, kind="other")
 
 
-def _extract_buttons(message) -> "list[list[Button]] | None":
+def _extract_buttons(message) -> list[list[Button]] | None:
     """Map a Telethon message's keyboard to nested Button rows."""
     rows = getattr(message, "buttons", None)
     if not rows:
@@ -50,7 +50,7 @@ def _extract_buttons(message) -> "list[list[Button]] | None":
     return [[_classify_button(b) for b in row] for row in rows]
 
 
-def _extract_reactions(message) -> "list[Reaction] | None":
+def _extract_reactions(message) -> list[Reaction] | None:
     """Map a Telethon message's reactions to Reaction buckets, newest API shapes included."""
     reactions = getattr(message, "reactions", None)
     results = getattr(reactions, "results", None) if reactions else None
@@ -87,7 +87,7 @@ def _pm(parse_mode: str | None) -> str | None:
     return "md"  # markdown / md / anything else
 
 
-def _describe_media(message) -> "str | None":
+def _describe_media(message) -> str | None:
     """Return a short human-readable descriptor of a message's media, or None."""
     if getattr(message, "photo", None):
         return "photo"

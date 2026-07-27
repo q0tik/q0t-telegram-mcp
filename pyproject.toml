@@ -1,6 +1,6 @@
 [project]
 name = "q0t-telegram-mcp"
-version = "0.7.0"
+version = "0.8.0"
 description = "Telegram MCP server that actually sends messages"
 requires-python = ">=3.12"
 dependencies = [
@@ -27,6 +27,29 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/tg_mcp"]
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+# Ignores are conventions this codebase holds on purpose, not debt:
+ignore = [
+    # Optional[X] over X | None in tool signatures is load-bearing. Some MCP
+    # clients render `X | None` as an anyOf they then report as type "unknown";
+    # the Optional + WithJsonSchema pairing is what fixed that.
+    "UP007", "UP045",
+    # Tools catch bare Exception on purpose: a tool error must come back as
+    # {"error": ...} for the model to read, not kill the MCP session.
+    "BLE001",
+    # EnvironmentError is the documented name in docs/architecture.md and what
+    # the tests match on. It is an alias of OSError; renaming buys nothing.
+    "UP024",
+    # Stacked patch() context managers read better nested than joined.
+    "SIM117",
+    # One deliberate try/except/pass, explained at the site: a noisy disconnect
+    # must not downgrade an already-answered check.
+    "S110",
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

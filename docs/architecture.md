@@ -9,12 +9,12 @@
 | Component | File | Purpose |
 |-----------|------|---------|
 | Entry point | `src/tg_mcp/__init__.py` | CLI dispatch: `auth` / `check` subcommands vs MCP server mode |
-| MCP server | `src/tg_mcp/server.py` | FastMCP instance, conditional tool registration (`TG_READONLY`), lifespan management |
+| MCP server | `src/tg_mcp/server.py` | FastMCP instance, conditional tool registration (`TG_READONLY`), stdio/HTTP transports, process-wide Telegram client |
 | Telegram client wrapper | `src/tg_mcp/client.py` | Async wrapper around `TelegramClient` |
 | Data models | `src/tg_mcp/models.py` | `UserInfo`, `Dialog`, `Message` dataclasses |
 | Auth CLI | `src/tg_mcp/auth.py` | Interactive auth flow: send code, OTP prompt, 2FA |
 | Session check | `src/tg_mcp/check.py` | `check` subcommand: is the saved session still authorized? |
-| Configuration | `src/tg_mcp/config.py` | Env var reading (`TG_APP_ID`, optional `TG_API_HASH`/`TG_SESSION_PATH`), session path resolution |
+| Configuration | `src/tg_mcp/config.py` | Env var reading (`TG_APP_ID`, optional `TG_API_HASH`/`TG_SESSION_PATH`), session path resolution, `TransportConfig` |
 
 ---
 
@@ -30,6 +30,7 @@ q0t-telegram-mcp/
 │   ├── IMPLEMENTER.md
 │   ├── TESTER.md
 │   └── DOCUMENTER.md
+├── CHANGELOG.md
 ├── docs/
 │   └── architecture.md          ← this file
 ├── src/
@@ -50,9 +51,13 @@ q0t-telegram-mcp/
     ├── test_cli.py
     ├── test_client.py
     ├── test_config.py
+    ├── test_http_integration.py
     ├── test_models.py
     ├── test_readonly.py
-    └── test_server.py
+    ├── test_server.py
+    ├── test_server_startup.py
+    ├── test_shared_client.py
+    └── test_transport.py
 ```
 
 ---
@@ -407,13 +412,82 @@ to a bot (can trigger anything that bot does). Both act as the account owner des
 as passive. `tg_download` is classified as a read: it writes to local disk but changes no
 account state.
 
-### Running
+### Transports and the shared Telegram client
 
 ```python
-def run_server() -> None:
+def run_server(config: TransportConfig | None = None) -> None:
+    config = config or TransportConfig.resolve()
     register_tools(mcp, readonly=readonly_from_env())
-    mcp.run()   # defaults to stdio transport; this call blocks
+    if not config.is_http:
+        mcp.run()          # stdio; blocks
+        return
+    _apply_http_settings(mcp, config)
+    _warn_if_exposed(config)
+    _serve_http(mcp, config)
 ```
+
+stdio stays the default, so invoking the package bare behaves as it did before 0.8.0.
+
+#### Why HTTP exists at all
+
+MCP clients spawn a stdio server **per run**. Two overlapping runs mean two processes of this
+package against one Telethon session file, and both die on
+`sqlite3.OperationalError: database is locked` — Telethon *writes* to the session at startup.
+Copying the session file per process trades that for `AUTH_KEY_DUPLICATED`: Telegram
+invalidates an `auth_key` it sees used from two places at once, logging the account out for
+real. The only correct shape is one long-lived process owning the session, with clients
+attaching over HTTP.
+
+#### `SharedTelegramClient` — the part that is easy to get wrong
+
+FastMCP enters the lifespan **per MCP session, not per process**: the low-level server does
+`enter_async_context(self.lifespan(self))` inside `Server.run()`
+(`mcp/server/lowlevel/server.py`), and the streamable-HTTP session manager calls
+`Server.run()` once for every connecting client
+(`mcp/server/streamable_http_manager.py::_handle_stateful_request`).
+
+Under stdio that distinction never mattered — one process, one client, one session. Under
+HTTP it is decisive: a lifespan that builds its own `TelegramClientWrapper` would open one
+Telethon client **per connected client, inside one process**, reproducing exactly the failure
+HTTP mode exists to eliminate. `tests/test_http_integration.py` asserts against this
+directly, and reverting the sharing makes it fail with `assert 5 == 1`.
+
+So the client lives in a module-level `SharedTelegramClient`:
+
+- an `asyncio.Lock` around creation, because two clients connecting at the same instant is
+  precisely the race in question;
+- reference-counted, so stdio (exactly one session, ever) keeps its old connect-on-entry /
+  disconnect-on-exit lifecycle unchanged;
+- a failed `connect()` is not cached, so one bad startup cannot leave a permanently dead
+  server handing a broken client to every later session.
+
+Concurrent tool calls are *not* serialised. Telethon multiplexes requests on one client
+itself, and a lock around the client would serialise all Telegram traffic for no benefit; the
+integration tests cover parallel calls on one session and across sessions.
+
+#### Listen address is the access control
+
+The server has no authentication of its own and grants full access to the account behind its
+session, so it binds `127.0.0.1` by default. A non-loopback bind is permitted — the operator
+may be inside an isolated container — but warns on stderr. FastMCP's DNS-rebinding
+protection ships allowing localhost `Host` headers only, so `_apply_http_settings` widens the
+allowances to match the chosen address: warning about a bind and then rejecting every request
+to it would be the worst of both worlds. Those allowances are rebuilt from the shipped
+defaults on each call rather than appended to, so applying two configurations in one process
+cannot accumulate stale entries.
+
+#### Logging
+
+`_serve_http` drives uvicorn directly rather than through `FastMCP.run`, which hardcodes its
+own uvicorn config and leaves no way to redirect logging. uvicorn's stock configuration sends
+the access log to **stdout**; everything is moved to stderr so diagnostics land in one place
+regardless of transport. Verified live: with `--transport http`, stdout stays empty.
+
+#### `/health`
+
+Registered with `@mcp.custom_route`, so it answers without an MCP session. Deliberately dull —
+status, package name, version, and the count of active sessions. Nothing configuration- or
+credential-derived, because anything that can reach the port can read it.
 
 ---
 

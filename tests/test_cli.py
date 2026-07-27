@@ -37,6 +37,68 @@ def _run(args: list[str], env: dict[str, str]) -> MagicMock:
     return patched
 
 
+class TestTransportOptions:
+    """Root-command flags that pick the transport.
+
+    The default must stay stdio: 0.7.x configs invoke the package bare, and an
+    MCP client that spawns it expects to speak over the pipe it just opened.
+    """
+
+    def _run(self, args: list[str], env: dict[str, str]) -> MagicMock:
+        with patch.dict(os.environ, env, clear=True), \
+                patch("tg_mcp.run_server") as run_server:
+            result = CliRunner().invoke(cli, args)
+        assert result.exit_code == 0, result.output
+        return run_server
+
+    def test_bare_invocation_runs_stdio(self) -> None:
+        run_server = self._run([], {})
+        assert run_server.call_args.args[0].transport == "stdio"
+
+    def test_transport_flag_selects_http(self) -> None:
+        run_server = self._run(["--transport", "http"], {})
+        assert run_server.call_args.args[0].transport == "http"
+
+    def test_host_and_port_flags(self) -> None:
+        run_server = self._run(
+            ["--transport", "http", "--host", "127.0.0.1", "--port", "8899"], {})
+        config = run_server.call_args.args[0]
+        assert (config.host, config.port) == ("127.0.0.1", 8899)
+
+    def test_env_selects_http_without_flags(self) -> None:
+        run_server = self._run([], {"TG_TRANSPORT": "http", "TG_PORT": "8123"})
+        config = run_server.call_args.args[0]
+        assert (config.transport, config.port) == ("http", 8123)
+
+    def test_flag_beats_env(self) -> None:
+        run_server = self._run(
+            ["--transport", "stdio"], {"TG_TRANSPORT": "http"})
+        assert run_server.call_args.args[0].transport == "stdio"
+
+    def test_unknown_transport_is_rejected_by_the_cli(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            result = CliRunner().invoke(cli, ["--transport", "carrier-pigeon"])
+        assert result.exit_code != 0
+
+    def test_bad_port_reports_cleanly(self) -> None:
+        """A traceback here reads like a crash rather than a typo."""
+        with patch.dict(os.environ, {}, clear=True):
+            result = CliRunner().invoke(cli, ["--transport", "http", "--port", "70000"])
+        assert result.exit_code == 1
+        assert "TG_PORT" in result.output
+
+    def test_subcommands_are_unaffected(self) -> None:
+        """The flags live on the group, so they must not shadow `auth`/`check`."""
+        flow = MagicMock()
+        flow.run = AsyncMock(return_value=None)
+        with patch.dict(os.environ, {"TG_APP_ID": "1", "TG_API_HASH": "h"}, clear=True), \
+                patch("tg_mcp.AuthFlow", return_value=flow), \
+                patch("tg_mcp.run_server") as run_server:
+            result = CliRunner().invoke(cli, ["auth", "--phone", "+15550001234"])
+        assert result.exit_code == 0, result.output
+        run_server.assert_not_called()
+
+
 class TestAuthSessionOption:
     def test_session_flag_sets_session_path(self) -> None:
         patched = _run(
