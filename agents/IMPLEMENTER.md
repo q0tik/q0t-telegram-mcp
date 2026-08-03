@@ -27,11 +27,13 @@ You do not invent architecture — if the design is unclear or missing, you stop
 
 ## Notes from implementation (2026-03-08)
 
-### FastMCP import paths
-- `FastMCP` and `Context` both live in `mcp.server.fastmcp` (not `mcp` directly).
-- Import as: `from mcp.server.fastmcp import FastMCP, Context`
+### MCP SDK import paths (updated 2026-08-03, mcp 2.0)
+- `MCPServer` and `Context` live in `mcp.server.mcpserver`.
+- Import as: `from mcp.server.mcpserver import MCPServer, Context`
+- **Superseded:** `mcp.server.fastmcp` and the name `FastMCP` were removed in mcp 2.0. Code
+  written against them does not import at all. The dependency is pinned to `mcp==2.0.0`.
 
-### FastMCP lifespan + AppContext
+### Lifespan + AppContext
 - The lifespan function must be an `@asynccontextmanager` that `yield`s the context object.
 - `AppContext` does NOT need to be frozen — it's just passed through the lifespan context.
 - Access the client in tools via: `ctx.request_context.lifespan_context.client`

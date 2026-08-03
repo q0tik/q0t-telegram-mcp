@@ -19,7 +19,7 @@ import os
 from unittest.mock import patch
 
 import pytest
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 from tg_mcp.server import READ_TOOLS, WRITE_TOOLS, readonly_from_env, register_tools
 
@@ -33,7 +33,7 @@ WRITE_NAMES = ALL_TOOL_NAMES - READ_ONLY_NAMES
 
 
 async def _registered(readonly: bool) -> set[str]:
-    server = FastMCP("test")
+    server = MCPServer("test")
     register_tools(server, readonly=readonly)
     return {tool.name for tool in await server.list_tools()}
 
@@ -95,7 +95,7 @@ class TestRunServerHonoursTheFlag:
     def test_run_server_registers_readonly_set_when_enabled(self) -> None:
         from tg_mcp.server import run_server
 
-        server = FastMCP("test")
+        server = MCPServer("test")
         with patch.dict(os.environ, {"TG_READONLY": "1"}), \
                 patch("tg_mcp.server.mcp", server), \
                 patch.object(server, "run"):
@@ -106,7 +106,7 @@ class TestRunServerHonoursTheFlag:
     def test_run_server_registers_everything_by_default(self) -> None:
         from tg_mcp.server import run_server
 
-        server = FastMCP("test")
+        server = MCPServer("test")
         env = {k: v for k, v in os.environ.items() if k != "TG_READONLY"}
         with patch.dict(os.environ, env, clear=True), \
                 patch("tg_mcp.server.mcp", server), \

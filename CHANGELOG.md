@@ -2,6 +2,46 @@
 
 Notable changes per release. Versions before 0.6.0 are recorded only in git history.
 
+## 0.10.0
+
+### Changed
+
+- **Moved to the mcp 2.x SDK.** `mcp.server.fastmcp` is gone upstream; the server is now
+  built on `MCPServer` from `mcp.server.mcpserver`. Tool signatures, `Annotated`/`Field`/
+  `WithJsonSchema` parameter declarations, the generated `inputSchema`, tool return shapes,
+  and `/health` are all unchanged — no client needs to do anything differently.
+- **Dependencies are pinned exactly** (`mcp==2.0.0`, `telethon==1.44.0`, `click==8.4.2`,
+  `uvicorn==0.52.1`) rather than floored. 0.9.0 shipped `mcp>=1.0.0`, mcp 2.0 removed the
+  module it imported, and every fresh install broke while the test suite — run against
+  `uv.lock` — stayed green. A version range is a promise about code that does not exist yet.
+  `uvicorn` is now declared directly: `_serve_http` imports it by name, so it was always a
+  real dependency, just borrowed from `mcp`'s tree.
+- **HTTP mode connects to Telegram at startup, not on the first MCP session.** mcp 2.0's
+  session manager enters the lifespan once for the process instead of once per connecting
+  client. Two consequences: the Telegram connection is held for the life of the server
+  rather than dropped and reopened as clients come and go, and **an unauthorized session
+  now fails the boot** — the process exits with `Not authorized` instead of starting and
+  answering `/health` while every tool call fails. Run `q0t-telegram-mcp check` first.
+- **DNS-rebinding policy is now passed explicitly on every HTTP start.** mcp 2.0 enables the
+  protection only when it recognises the host as loopback and otherwise leaves it off
+  entirely, which would have silently dropped a defence on a deliberate off-host bind. The
+  policy is built per start (`_transport_security`) instead of mutating server settings,
+  which also removes the last piece of shared mutable state at module import.
+
+### Notes
+
+- `SharedTelegramClient` stays. mcp 2.0 fixed the per-session lifespan for streamable HTTP,
+  but **sse still enters it per connection** (`sse_app` calls `Server.run()` inside each
+  connection), so removing the shared client would reintroduce `database is locked` for
+  anyone on `--transport sse`.
+- **The regression test for that guarantee had quietly stopped working.** It ran against
+  streamable HTTP, where mcp 2.0's session manager now holds a single client on its own —
+  so it passed whether or not the sharing existed. A new sse test replaces it, and was
+  checked the only way worth checking: a lifespan that builds its own client makes it fail
+  with two Telegram clients for two connections, which is the bug it is there to catch.
+- Removed `TransportConfig.fastmcp_transport`, dead since the server started choosing its
+  app factory directly. Only tests referenced it.
+
 ## 0.9.1
 
 ### Fixed

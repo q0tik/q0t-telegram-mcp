@@ -137,8 +137,8 @@ Obtain API credentials from [https://my.telegram.org/apps](https://my.telegram.o
 | `TG_API_HASH` | `auth` only | Not needed to run the server — see below |
 | `TG_SESSION_PATH` | optional | [Choosing the session path](#choosing-the-session-path-tg_session_path) |
 | `TG_READONLY` | optional | [Read-only mode](#read-only-mode-tg_readonly) |
-| `TG_TRANSPORT` | optional | `stdio` (default) or `http` — [Several clients on one machine](#several-clients-on-one-machine) |
-| `TG_HOST` / `TG_PORT` | optional | Bind address in http mode; defaults to `127.0.0.1:8765` |
+| `TG_TRANSPORT` | optional | `stdio` (default), `http`, or `sse` — [Several clients on one machine](#several-clients-on-one-machine) |
+| `TG_HOST` / `TG_PORT` | optional | Bind address in http/sse mode; defaults to `127.0.0.1:8765` |
 
 ### Why `TG_API_HASH` is not needed by the server
 
@@ -362,12 +362,23 @@ speak streamable HTTP.
 Flags win over environment variables. **stdio remains the default**, so existing configs that
 invoke the package with no arguments are unaffected.
 
-`GET /health` returns `200` with the version and the number of connected MCP sessions, so a
-supervisor can tell the process is up without opening an MCP session:
+`GET /health` returns `200` with the version, so a supervisor can tell the process is up
+without opening an MCP session:
 
 ```json
-{"status": "ok", "name": "q0t-telegram-mcp", "version": "0.9.1", "active_sessions": 2}
+{"status": "ok", "name": "q0t-telegram-mcp", "version": "0.10.0", "active_sessions": 1}
 ```
+
+Since 0.10.0 the Telegram connection is opened when the process starts, not when the first
+MCP session arrives, and is held until the server stops. A server with no authorized session
+therefore **fails to start** rather than booting and answering `/health` while every tool
+call fails — so `/health` answering at all already means Telegram is connected. Run
+`q0t-telegram-mcp check` before starting if you are unsure the session is still good.
+
+The same change makes `active_sessions` a hold count rather than a client count: in `http`
+mode it reads `1` for as long as the server runs, however many clients are attached. Do not
+use it to count clients — under `sse` it still tracks connections, so the number means
+different things per transport.
 
 ### ⚠️ Do not expose the port
 

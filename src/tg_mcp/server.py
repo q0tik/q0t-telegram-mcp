@@ -8,7 +8,8 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Annotated, Optional
 
-from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.mcpserver import Context, MCPServer
+from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import Field, WithJsonSchema
 from starlette.responses import JSONResponse
 
@@ -26,13 +27,16 @@ class AppContext:
 class SharedTelegramClient:
     """One Telethon client per *process*, shared by every MCP session.
 
-    FastMCP enters the lifespan per session, not per process: the low-level
-    server does ``enter_async_context(self.lifespan(self))`` inside
-    ``Server.run()``, and the streamable-HTTP session manager calls
-    ``Server.run()`` once per connecting client. Under stdio that distinction
-    never mattered — one process served one client — but under HTTP it is the
-    difference between working and reproducing the exact bug this transport
-    exists to fix.
+    Under **sse** the lifespan is entered per connected client, not per process:
+    ``sse_app`` calls ``Server.run()`` inside each connection, and ``Server.run``
+    does ``enter_async_context(self.lifespan(self))``. Building the Telegram
+    client in the lifespan would therefore build one per client — reproducing
+    the exact bug the HTTP transport exists to fix.
+
+    mcp 2.0 fixed this for streamable HTTP: its session manager enters the
+    lifespan once for the manager's lifetime, so http alone would no longer need
+    this. sse still would, and stdio is unaffected either way (one process, one
+    client), so the shared client stays until sse is dropped.
 
     Two Telethon clients on one session file fail in two ways: SQLite raises
     ``database is locked`` because Telethon *writes* to the session on connect,
@@ -90,12 +94,12 @@ shared_client = SharedTelegramClient()
 
 
 @asynccontextmanager
-async def lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
+async def lifespan(server: MCPServer) -> AsyncIterator[AppContext]:
     """Hand this session the process-wide Telegram client.
 
-    Entered once per MCP session. Under stdio that is once per process; under
-    HTTP it is once per connected client, which is why the client itself is
-    shared rather than built here.
+    Entered once per process under stdio and streamable HTTP, but once per
+    connected client under sse — which is why the client itself is shared
+    rather than built here. See :class:`SharedTelegramClient`.
 
     Raises:
         EnvironmentError: If ``TG_APP_ID`` is not set.
@@ -108,7 +112,7 @@ async def lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
         await shared_client.release()
 
 
-mcp = FastMCP("q0t-telegram-mcp", lifespan=lifespan)
+mcp = MCPServer("q0t-telegram-mcp", lifespan=lifespan)
 
 
 _MAX_ERROR_CHARS = 300
@@ -415,16 +419,12 @@ WRITE_TOOLS = [
 
 _READONLY_TRUE = {"1", "true", "yes"}
 
-#: The shipped DNS-rebinding allowances, captured before anything widens them so
-#: a later reconfiguration can be rebuilt from a clean base.
-_BASE_TRANSPORT_SECURITY = (
-    tuple(mcp.settings.transport_security.allowed_hosts)
-    if mcp.settings.transport_security
-    else (),
-    tuple(mcp.settings.transport_security.allowed_origins)
-    if mcp.settings.transport_security
-    else (),
-)
+#: Loopback DNS-rebinding allowances, spelled out rather than read off the
+#: server: mcp 2.0 dropped ``settings.transport_security`` and instead applies
+#: these itself when the host looks like loopback. Stating them here keeps one
+#: source of truth for both branches of :func:`_transport_security`.
+_BASE_ALLOWED_HOSTS = ("127.0.0.1:*", "localhost:*", "[::1]:*")
+_BASE_ALLOWED_ORIGINS = ("http://127.0.0.1:*", "http://localhost:*", "http://[::1]:*")
 
 
 def readonly_from_env() -> bool:
@@ -437,7 +437,7 @@ def readonly_from_env() -> bool:
     return (os.environ.get("TG_READONLY") or "").strip().lower() in _READONLY_TRUE
 
 
-def register_tools(server: FastMCP, *, readonly: bool) -> None:
+def register_tools(server: MCPServer, *, readonly: bool) -> None:
     """Register the tool set on *server*.
 
     In read-only mode the writing tools are never registered, so they do not
@@ -520,16 +520,20 @@ _STDERR_LOG_CONFIG = {
 }
 
 
-def _serve_http(server: FastMCP, config: TransportConfig) -> None:
+def _serve_http(server: MCPServer, config: TransportConfig) -> None:
     """Serve *server* over HTTP until stopped.
 
-    uvicorn is driven directly rather than through ``FastMCP.run`` because that
-    path hardcodes its own uvicorn config and leaves no way to redirect logging
-    to stderr.
+    uvicorn is driven directly rather than through ``MCPServer.run`` because
+    that path hardcodes its own uvicorn config and leaves no way to redirect
+    logging to stderr.
     """
     import uvicorn
 
-    app = server.sse_app() if config.transport == "sse" else server.streamable_http_app()
+    security = _transport_security(config)
+    if config.transport == "sse":
+        app = server.sse_app(host=config.host, transport_security=security)
+    else:
+        app = server.streamable_http_app(host=config.host, transport_security=security)
     uvicorn.Server(
         uvicorn.Config(
             app,
@@ -541,32 +545,34 @@ def _serve_http(server: FastMCP, config: TransportConfig) -> None:
     ).run()
 
 
-def _apply_http_settings(server: FastMCP, config: TransportConfig) -> None:
-    """Point FastMCP at the resolved address and keep it usable there.
+def _transport_security(config: TransportConfig) -> TransportSecuritySettings:
+    """Return the DNS-rebinding policy for the address being served.
 
-    Rebuilt from the shipped defaults on every call rather than appended to, so
-    that applying two configurations in one process (tests do; a future reload
-    might) cannot accumulate stale allowances from an address no longer in use.
+    Built fresh from the loopback base on every call rather than mutated in
+    place, so applying two configurations in one process (tests do; a future
+    reload might) cannot accumulate stale allowances from an address no longer
+    in use.
+
+    Always returned explicitly, never left to the SDK. mcp 2.0 enables this
+    protection only when it recognises the host as loopback and otherwise leaves
+    it **off entirely** — so an off-host bind would silently lose a defence it
+    used to have. Widening the allowances is the deliberate choice here;
+    dropping them is not.
     """
-    server.settings.host = config.host
-    server.settings.port = config.port
-
-    security = server.settings.transport_security
-    if security is None:  # pragma: no cover - only when auth is reconfigured
-        return
-    base_hosts, base_origins = _BASE_TRANSPORT_SECURITY
-    if config.is_loopback:
-        security.allowed_hosts = list(base_hosts)
-        security.allowed_origins = list(base_origins)
-        return
-    # DNS-rebinding protection ships allowing localhost Host headers only, so a
-    # deliberate off-host bind would otherwise reject every request that reached
-    # it. Warning about the bind and then breaking it is the worst of both
-    # worlds; the user asked for this address.
-    security.allowed_hosts = list(base_hosts) + [config.host, f"{config.host}:*"]
-    security.allowed_origins = list(base_origins) + [
-        f"http://{config.host}", f"http://{config.host}:*",
-    ]
+    hosts = list(_BASE_ALLOWED_HOSTS)
+    origins = list(_BASE_ALLOWED_ORIGINS)
+    if not config.is_loopback:
+        # Protection ships allowing localhost Host headers only, so a deliberate
+        # off-host bind would otherwise reject every request that reached it.
+        # Warning about the bind and then breaking it is the worst of both
+        # worlds; the user asked for this address.
+        hosts += [config.host, f"{config.host}:*"]
+        origins += [f"http://{config.host}", f"http://{config.host}:*"]
+    return TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=hosts,
+        allowed_origins=origins,
+    )
 
 
 def _warn_if_exposed(config: TransportConfig) -> None:
@@ -598,6 +604,5 @@ def run_server(config: TransportConfig | None = None) -> None:
     if not config.is_http:
         mcp.run()
         return
-    _apply_http_settings(mcp, config)
     _warn_if_exposed(config)
     _serve_http(mcp, config)

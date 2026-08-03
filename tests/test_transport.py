@@ -83,13 +83,13 @@ class TestAliases:
         Accept both so a user copying either spelling gets what they meant."""
         assert _resolve({"TG_TRANSPORT": "streamable-http"}).transport == "http"
 
-    def test_http_maps_to_the_fastmcp_transport_name(self) -> None:
-        assert _resolve({}, transport="http").fastmcp_transport == "streamable-http"
+    def test_underscore_spelling_is_accepted_as_http(self) -> None:
+        """`streamable_http` is what a shell-quoting mistake tends to produce."""
+        assert _resolve({"TG_TRANSPORT": "streamable_http"}).transport == "http"
 
     def test_sse_is_supported(self) -> None:
         cfg = _resolve({}, transport="sse")
         assert cfg.transport == "sse"
-        assert cfg.fastmcp_transport == "sse"
         assert cfg.is_http is True
 
 

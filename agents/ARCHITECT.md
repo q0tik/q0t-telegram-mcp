@@ -31,8 +31,9 @@ Your job is to think, research, and produce a written design that others can imp
 ### MCP Python SDK (`modelcontextprotocol/python-sdk`)
 
 - Library ID for Context7: `/modelcontextprotocol/python-sdk`
-- Use `FastMCP` from `mcp.server.fastmcp`; import `Context` from the same module
-- Lifespan pattern: decorate an async context manager with `@asynccontextmanager`, yield a typed dataclass, pass to `FastMCP("name", lifespan=fn)`
+- Use `MCPServer` from `mcp.server.mcpserver`; import `Context` from the same module.
+  (Was `FastMCP` in `mcp.server.fastmcp` — removed upstream in mcp 2.0, see CHANGELOG 0.10.0)
+- Lifespan pattern: decorate an async context manager with `@asynccontextmanager`, yield a typed dataclass, pass to `MCPServer("name", lifespan=fn)`
 - Access lifespan context in tools via: `ctx.request_context.lifespan_context`
 - Tool context type hint: `ctx: Context[ServerSession, AppContext]` (import `ServerSession` from `mcp.server.session`)
 - Tool functions decorated with `@mcp.tool()` — parameters are inferred from the function signature
@@ -93,5 +94,5 @@ Fetched `internal/tg/draft.go` from https://github.com/chaindead/telegram-mcp:
 - `send_read_acknowledge(entity)` with no message marks ALL messages as read (desired behavior for `tg_read`)
 - Telethon `Dialog.date` is a `datetime` object, not a string — call `.isoformat()` when serializing
 - `TelegramClient` session path: pass the extensionless string; Telethon auto-appends `.session`
-- FastMCP tool functions can be `async def` — prefer async for all tools since client calls are async
+- Tool functions can be `async def` — prefer async for all tools since client calls are async
 - `mcp.run()` blocks — call it at end of `run_server()`, not inside an async function

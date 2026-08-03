@@ -71,7 +71,16 @@ Good documentation explains the *why*, not just the *what*. Someone unfamiliar w
   They describe the state of the world on their date and must not be edited to match current
   behaviour — stale-looking lines there are correct as history.
 - Bump the version inside the `/health` example JSON in the README on every release; grep for
-  the old version number, it hides in prose.
+  the old version number, it hides in prose. The vault's `setup.md` now carries the same JSON
+  block — bump both.
+- Sections 5 and 7 also drift in *content*, not only in coverage: §5 had `send_message() -> None`
+  after it started returning a message ID, and §7's `tg_send` block still returned a bare
+  `{"ok": true}`. When a tool's return shape changes, check both places plus the sequence
+  diagram in §14, which spells the payload out a third time.
+- `agents/ARCHITECT.md`, `IMPLEMENTER.md`, and `TESTER.md` all still document `FastMCP` import
+  paths and lifespan behaviour from mcp 1.x. Those are other agents' files to fix, but they are
+  wrong, and an agent reading one will write code that does not import. Flag it to the
+  orchestrator rather than editing them.
 
 ### Documenting a breaking parameter change
 
@@ -85,6 +94,37 @@ Good documentation explains the *why*, not just the *what*. Someone unfamiliar w
 - Ground constraints in the platform's rule, not in our implementation: "Telegram refuses an
   album that mixes media classes" explains the behaviour and survives a refactor; "we call
   `group_for_albums`" explains nothing to a user.
+
+### Documenting an SDK migration (learned on 0.10.0, mcp 1.x → 2.0)
+
+- **Grep for the old symbol, then stop trusting the grep.** `FastMCP` → `MCPServer` was ~20
+  mechanical replacements in `docs/architecture.md`, and every one of them was the easy part.
+  The things that actually mattered had no `FastMCP` in them: a per-process lifespan, a
+  removed `settings.host`, a field whose *meaning* changed while its name stayed put.
+- **Keep the old name once, deliberately.** A single sentence near the top ("this class used
+  to be `FastMCP` in `mcp.server.fastmcp`") is what lets a reader arriving with an old
+  traceback recognise their situation. Same rule as a renamed parameter: old and new name in
+  one sentence. Everywhere else, use the current name only.
+- **Hunt for fields that kept their name and changed their meaning.** `/health` still reports
+  `active_sessions`, but under `http` it is now a hold count pinned at `1`, not a client
+  count — the README example literally showed `2`, which is unreachable. Nothing in a
+  find-and-replace pass would have surfaced that; it came from reading the lifespan change and
+  asking what each documented number is derived from.
+- **Re-verify claims the docs make about tests.** The architecture doc said "reverting the
+  sharing makes `tests/test_http_integration.py` fail with `assert 5 == 1`". True under 1.x;
+  under 2.0 the session manager holds the count at one by itself, so the test passes either
+  way and the safety net is gone. When a doc asserts that a test guards something, the
+  migration is exactly when that stops being true — and saying so is more valuable than the
+  original claim was.
+- **A doc that says "add these sections" is a task list, not documentation.** `docs/architecture.md`
+  §3 still carried its ARCHITECT-era imperative voice ("Add `click` as a runtime dependency")
+  while listing floors that no longer matched the pinned reality. Convert to descriptive when
+  you touch such a section — and put the *reason for the pins* there, since that is the part
+  a reader cannot reconstruct.
+- **Behaviour that removes a failure mode by making startup fail is a headline, not a
+  footnote.** "The server no longer starts with a dead session" belongs in the README, the
+  architecture doc, and the vault, each time with what to run instead (`check`) — a user
+  meeting `Application startup failed` will otherwise read it as a regression.
 
 ### Documenting multi-selector parameters
 

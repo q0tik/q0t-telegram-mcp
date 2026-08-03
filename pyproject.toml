@@ -1,17 +1,24 @@
 [project]
 name = "q0t-telegram-mcp"
-version = "0.9.1"
+version = "0.10.0"
 description = "Telegram MCP server that actually sends messages"
 requires-python = ">=3.12"
+# Pinned exactly, not floored. 0.9.0 shipped `mcp>=1.0.0` and mcp 2.0 removed
+# `mcp.server.fastmcp` — every fresh install died at import while the test suite,
+# running against uv.lock, stayed green. A range is a promise about code that
+# does not exist yet; these are the versions this release was actually tested
+# on. Raising one is a deliberate edit plus a test run, which is the point.
 dependencies = [
-    "click>=8.0.0",
-    # <2: mcp 2.0 deleted mcp.server.fastmcp and renamed FastMCP to MCPServer
-    # (mcp.server.mcpserver). Without the cap, a fresh install resolves 2.x and
-    # every entry point dies at import on `from mcp.server.fastmcp import …`.
-    "mcp>=1.0.0,<2.0.0",
-    # >=1.44.0 (TL layer 227): earlier layers raise TypeNotFoundError on the new
+    "click==8.4.2",
+    # 2.x: FastMCP is now MCPServer in mcp.server.mcpserver, and host/port/
+    # transport_security moved off `settings` onto the app factories.
+    "mcp==2.0.0",
+    # 1.44.0 (TL layer 227): earlier layers raise TypeNotFoundError on the
     # Dialog constructor (0xfc89f7f3) that Telegram now returns from getDialogs.
-    "telethon>=1.44.0",
+    "telethon==1.44.0",
+    # Driven directly in HTTP mode so logging can go to stderr; imported by name
+    # in _serve_http, so it is a real dependency of ours, not just mcp's.
+    "uvicorn==0.52.1",
 ]
 
 [project.scripts]

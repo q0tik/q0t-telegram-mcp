@@ -17,7 +17,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from tg_mcp.config import TransportConfig
-from tg_mcp.server import mcp, run_server
+from tg_mcp.server import _transport_security, mcp, run_server
 
 
 class TestStdioIsDefault:
@@ -31,11 +31,17 @@ class TestStdioIsDefault:
         serve_http.assert_not_called()
 
     def test_stdio_does_not_touch_network_settings(self) -> None:
-        """Binding a port in stdio mode would be a surprising side effect."""
-        before = (mcp.settings.host, mcp.settings.port)
+        """Binding a port in stdio mode would be a surprising side effect.
+
+        Address and rebinding policy live on the app factories in mcp 2.x, not
+        on the server, so nothing about the server object may change here — a
+        regression back to mutating shared state would show up as these
+        attributes reappearing.
+        """
         with patch.dict(os.environ, {}, clear=True), patch.object(mcp, "run"):
             run_server()
-        assert (mcp.settings.host, mcp.settings.port) == before
+        assert not hasattr(mcp.settings, "host")
+        assert not hasattr(mcp.settings, "port")
 
 
 class TestHttpMode:
@@ -48,10 +54,12 @@ class TestHttpMode:
         serve_http.assert_called_once()
 
     def test_http_applies_host_and_port(self) -> None:
+        """The resolved address reaches the server loop that actually binds it."""
         cfg = TransportConfig(transport="http", host="127.0.0.1", port=8899)
-        with patch("tg_mcp.server._serve_http"):
+        with patch("tg_mcp.server._serve_http") as serve_http:
             run_server(cfg)
-        assert (mcp.settings.host, mcp.settings.port) == ("127.0.0.1", 8899)
+        served = serve_http.call_args.args[1]
+        assert (served.host, served.port) == ("127.0.0.1", 8899)
 
     def test_env_selects_http(self) -> None:
         env = {"TG_TRANSPORT": "http", "TG_HOST": "127.0.0.1", "TG_PORT": "8123"}
@@ -80,21 +88,33 @@ class TestExposureWarning:
         assert captured.out == ""
 
     def test_non_loopback_bind_is_not_then_blocked(self) -> None:
-        """FastMCP's DNS-rebinding protection only allows localhost Host headers
-        by default. Warning about a bind and then rejecting every request to it
-        would be the worst of both worlds — the user asked for this."""
+        """DNS-rebinding protection allows localhost Host headers by default.
+        Warning about a bind and then rejecting every request to it would be the
+        worst of both worlds — the user asked for this."""
         cfg = TransportConfig(transport="http", host="192.168.1.10", port=8765)
-        with patch("tg_mcp.server._serve_http"):
-            run_server(cfg)
-        allowed = mcp.settings.transport_security.allowed_hosts
+        allowed = _transport_security(cfg).allowed_hosts
         assert any("192.168.1.10" in h for h in allowed)
+
+    def test_non_loopback_bind_keeps_protection_enabled(self) -> None:
+        """mcp 2.x turns rebinding protection off entirely for a non-loopback
+        host when none is supplied. Widening the allowances is the deliberate
+        choice; losing the defence silently is not — so the policy is always
+        passed explicitly."""
+        cfg = TransportConfig(transport="http", host="192.168.1.10", port=8765)
+        assert _transport_security(cfg).enable_dns_rebinding_protection is True
 
     def test_loopback_leaves_protection_untouched(self) -> None:
         cfg = TransportConfig(transport="http", host="127.0.0.1", port=8765)
-        with patch("tg_mcp.server._serve_http"):
-            run_server(cfg)
-        allowed = mcp.settings.transport_security.allowed_hosts
+        allowed = _transport_security(cfg).allowed_hosts
         assert not any("192.168" in h or "0.0.0.0" in h for h in allowed)
+
+    def test_policy_is_rebuilt_per_call_not_accumulated(self) -> None:
+        """Two configurations in one process must not leave the first address
+        allowed in the second's policy."""
+        off_host = TransportConfig(transport="http", host="192.168.1.10", port=8765)
+        loopback = TransportConfig(transport="http", host="127.0.0.1", port=8765)
+        _transport_security(off_host)
+        assert not any("192.168" in h for h in _transport_security(loopback).allowed_hosts)
 
 
 class TestNothingSecretIsPrinted:

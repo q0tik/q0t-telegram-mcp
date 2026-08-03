@@ -21,7 +21,9 @@ API_HASH_PLACEHOLDER = "placeholder-api-hash-this-process-never-logs-in"
 DEFAULT_HTTP_HOST = "127.0.0.1"
 DEFAULT_HTTP_PORT = 8765
 
-#: Public spelling -> the transport name FastMCP expects.
+#: Accepted spelling -> the canonical name. Used to validate TG_TRANSPORT and to
+#: fold the spec's "streamable-http" onto the "http" this project exposes; the
+#: server picks its app factory from the folded name, not from this map.
 _TRANSPORT_ALIASES = {
     "stdio": "stdio",
     "http": "streamable-http",
@@ -50,11 +52,6 @@ class TransportConfig:
     def is_http(self) -> bool:
         """True for any network transport (as opposed to stdio)."""
         return self.transport in ("http", "sse")
-
-    @property
-    def fastmcp_transport(self) -> str:
-        """The transport name to hand to ``FastMCP.run``."""
-        return _TRANSPORT_ALIASES[self.transport]
 
     @property
     def is_loopback(self) -> bool:

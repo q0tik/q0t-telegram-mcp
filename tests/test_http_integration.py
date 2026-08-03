@@ -28,8 +28,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import uvicorn
 from mcp import ClientSession
+from mcp.client.sse import sse_client
 from mcp.client.streamable_http import streamable_http_client
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 from tg_mcp.models import UserInfo
 from tg_mcp.server import SharedTelegramClient, health, lifespan, register_tools
@@ -66,11 +67,11 @@ async def _serving(app):
 
 @asynccontextmanager
 async def _http_server(readonly: bool = False):
-    """A fresh FastMCP over HTTP with Telethon mocked.
+    """A fresh MCPServer over HTTP with Telethon mocked.
 
-    Fresh per test because a FastMCP session manager may only be run once per
-    instance. Yields (base_url, created_wrappers) so tests can assert on how
-    many Telegram clients were actually built.
+    Fresh per test because a session manager may only be run once per instance.
+    Yields (base_url, created_wrappers) so tests can assert on how many Telegram
+    clients were actually built.
     """
     created: list[MagicMock] = []
 
@@ -86,7 +87,7 @@ async def _http_server(readonly: bool = False):
         return wrapper
 
     shared = SharedTelegramClient()
-    server = FastMCP("q0t-telegram-mcp-test", lifespan=lifespan)
+    server = MCPServer("q0t-telegram-mcp-test", lifespan=lifespan)
     register_tools(server, readonly=readonly)
     server.custom_route("/health", methods=["GET"])(health)
 
@@ -99,8 +100,53 @@ async def _http_server(readonly: bool = False):
 
 
 @asynccontextmanager
+async def _sse_server():
+    """The same server, served over sse instead of streamable HTTP.
+
+    Worth its own fixture because sse is the transport where the lifespan is
+    still entered per *connection*: ``sse_app`` calls ``Server.run()`` inside
+    each one. Streamable HTTP stopped exercising that in mcp 2.0, where the
+    session manager enters the lifespan once and would hold a single client even
+    if `SharedTelegramClient` were deleted.
+    """
+    created: list[MagicMock] = []
+
+    def build(config):
+        wrapper = MagicMock()
+        wrapper.connect = AsyncMock()
+        wrapper.disconnect = AsyncMock()
+        wrapper.get_me = AsyncMock(
+            return_value=UserInfo(id=777, first_name="Alice", last_name=None,
+                                  username="alice", phone="15550001234")
+        )
+        created.append(wrapper)
+        return wrapper
+
+    shared = SharedTelegramClient()
+    server = MCPServer("q0t-telegram-mcp-test-sse", lifespan=lifespan)
+    register_tools(server, readonly=False)
+
+    with patch("tg_mcp.server.TelegramClientWrapper", side_effect=build), \
+            patch("tg_mcp.server.Config") as config, \
+            patch("tg_mcp.server.shared_client", shared):
+        config.from_env.return_value = MagicMock()
+        async with _serving(server.sse_app()) as base:
+            yield base, created, shared
+
+
+@asynccontextmanager
+async def _sse_client_session(base: str):
+    async with sse_client(f"{base}/sse") as (read, write):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            yield session
+
+
+@asynccontextmanager
 async def _mcp_client(base: str):
-    async with streamable_http_client(f"{base}/mcp") as (read, write, _):
+    # Two streams, not three: mcp 2.0 dropped the trailing get_session_id
+    # callback from the client transport's yield.
+    async with streamable_http_client(f"{base}/mcp") as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
             yield session
@@ -174,33 +220,82 @@ class TestConcurrentClients:
         assert all("alice" in str(r.content) for r in results)
         assert len(created) == 1
 
-    async def test_client_is_released_when_everyone_disconnects(self) -> None:
-        """Sessions that come and go must not leak holds, or the process would
-        never release the Telegram connection."""
-        async with _http_server() as (base, _created, shared):
+    async def test_client_is_held_for_the_process_not_per_session(self) -> None:
+        """Sessions coming and going must not churn the Telegram connection.
+
+        Changed in mcp 2.0: its session manager enters the lifespan once for its
+        own lifetime rather than once per connecting client, so the hold is taken
+        at startup and kept. Under mcp 1.x this same scenario dropped to zero
+        holds between clients and reconnected for the next one.
+        """
+        async with _http_server() as (base, created, shared):
             async with _mcp_client(base):
                 pass
             async with _mcp_client(base):
                 pass
-            # Give the server's session teardown a moment to run.
-            for _ in range(100):
-                if shared.active_sessions == 0:
-                    break
-                await asyncio.sleep(0.01)
-            assert shared.active_sessions == 0
+            assert shared.active_sessions == 1
+            assert len(created) == 1, "reconnecting per client is the bug, not the fix"
+            created[0].disconnect.assert_not_awaited()
+
+    async def test_client_is_released_when_the_server_stops(self) -> None:
+        """The hold must not outlive the server, or shutdown would leak the
+        Telegram connection and the session file stays locked."""
+        async with _http_server() as (base, created, shared):
+            async with _mcp_client(base):
+                pass
+        for _ in range(100):
+            if shared.active_sessions == 0:
+                break
+            await asyncio.sleep(0.01)
+        assert shared.active_sessions == 0
+        created[0].disconnect.assert_awaited_once()
+
+
+class TestSseStillNeedsTheSharedClient:
+    """The live guard on `SharedTelegramClient`.
+
+    Under mcp 1.x the streamable-HTTP tests above were that guard: deleting the
+    sharing made them fail with five Telegram clients instead of one. mcp 2.0
+    moved the streamable-HTTP lifespan to once-per-process, so those tests now
+    pass either way and stopped guarding anything. sse did not change, so the
+    guarantee has to be checked here or nowhere.
+    """
+
+    async def test_two_sse_clients_share_one_telegram_client(self) -> None:
+        async with _sse_server() as (base, created, _shared):
+            async def one_client():
+                async with _sse_client_session(base) as session:
+                    return await session.call_tool("tg_me", {})
+
+            first, second = await asyncio.gather(one_client(), one_client())
+
+        assert "alice" in str(first.content)
+        assert "alice" in str(second.content)
+        assert len(created) == 1, (
+            "sse enters the lifespan per connection — without SharedTelegramClient "
+            "this is one Telethon client per connected client, which is the "
+            "`database is locked` bug the HTTP transport exists to fix"
+        )
+        created[0].connect.assert_awaited_once()
 
 
 class TestHealthOverHttp:
     async def test_health_answers_without_an_mcp_session(self) -> None:
         """Consumers need to know the process is up before opening a session."""
-        import httpx
+        # httpx2, not httpx: that is what mcp 2.0 depends on, and plain httpx is
+        # no longer pulled in at all.
+        import httpx2
 
         async with _http_server() as (base, created, _shared):
-            async with httpx.AsyncClient() as http:
+            # Changed in mcp 2.0: the lifespan runs when the app starts, so the
+            # Telegram client already exists before any request arrives. What
+            # still must hold is that /health does not build one *of its own*.
+            before = len(created)
+            async with httpx2.AsyncClient() as http:
                 response = await http.get(f"{base}/health")
+            after = len(created)
 
         assert response.status_code == 200
         assert response.json()["status"] == "ok"
         assert response.json()["name"] == "q0t-telegram-mcp"
-        # Health must not itself open a Telegram connection.
-        assert created == []
+        assert after == before, "/health must not open a Telegram connection"

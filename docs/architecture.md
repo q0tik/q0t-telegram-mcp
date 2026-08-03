@@ -2,14 +2,21 @@
 
 ## 1. Overview
 
-`q0t-telegram-mcp` is a Python MCP server that exposes Telegram operations as MCP tools accessible to AI assistants like Claude Code. It uses `telethon` to communicate with Telegram's MTProto API and the `mcp` Python SDK (`FastMCP`) to handle the MCP protocol over stdio.
+`q0t-telegram-mcp` is a Python MCP server that exposes Telegram operations as MCP tools accessible to AI assistants like Claude Code. It uses `telethon` to communicate with Telegram's MTProto API and the `mcp` Python SDK (`MCPServer`, from `mcp.server.mcpserver`) to handle the MCP protocol over stdio, streamable HTTP, or SSE.
+
+Since 0.10.0 the SDK is `mcp` 2.x. The class formerly known as `FastMCP` — and its module
+`mcp.server.fastmcp` — no longer exist upstream; `MCPServer` is the same object under a new
+name and takes the same constructor arguments, so `MCPServer("q0t-telegram-mcp",
+lifespan=lifespan)` reads exactly as the old call did. What did change is where the HTTP
+listen address and the DNS-rebinding policy live (§7) and how often the lifespan is
+entered (§7).
 
 ### Components
 
 | Component | File | Purpose |
 |-----------|------|---------|
 | Entry point | `src/tg_mcp/__init__.py` | CLI dispatch: `auth` / `check` subcommands vs MCP server mode |
-| MCP server | `src/tg_mcp/server.py` | FastMCP instance, conditional tool registration (`TG_READONLY`), stdio/HTTP transports, process-wide Telegram client |
+| MCP server | `src/tg_mcp/server.py` | `MCPServer` instance, conditional tool registration (`TG_READONLY`), stdio/HTTP transports, process-wide Telegram client |
 | Telegram client wrapper | `src/tg_mcp/client.py` | Async wrapper around `TelegramClient` |
 | Data models | `src/tg_mcp/models.py` | `UserInfo`, `Dialog`, `Message` dataclasses |
 | Media grouping | `src/tg_mcp/media.py` | Splits a file list into Telegram-legal albums; path checks. Pure functions, no Telethon |
@@ -43,7 +50,7 @@ q0t-telegram-mcp/
 │       ├── config.py             ← Config dataclass, env + path resolution
 │       ├── media.py              ← album grouping by media kind, path checks
 │       ├── models.py             ← UserInfo, Dialog, Message
-│       └── server.py             ← FastMCP instance, tool registrations
+│       └── server.py             ← MCPServer instance, tool registrations
 ├── tasks/
 │   └── task-1.md
 └── tests/
@@ -65,24 +72,45 @@ q0t-telegram-mcp/
 
 ---
 
-## 3. pyproject.toml Changes
+## 3. Dependencies and `pyproject.toml`
 
-Add these sections to `pyproject.toml` (do not change existing content):
+The console script is what `uvx q0t-telegram-mcp` resolves to:
 
 ```toml
 [project.scripts]
 q0t-telegram-mcp = "tg_mcp:main"
 ```
 
-Also add `click` as a runtime dependency (for the CLI):
+Runtime dependencies are **pinned exactly, not floored**:
 
 ```toml
 dependencies = [
-    "click>=8.0.0",
-    "mcp>=1.0.0",
-    "telethon>=1.36.0",
+    "click==8.4.2",
+    "mcp==2.0.0",
+    "telethon==1.44.0",
+    "uvicorn==0.52.1",
 ]
 ```
+
+### Why pins rather than ranges
+
+0.9.0 shipped `mcp>=1.0.0`. When `mcp` 2.0 removed `mcp.server.fastmcp`, every *fresh* install
+died at import with `ModuleNotFoundError` while the test suite stayed green — tests resolve
+against `uv.lock`, which still held 1.x, so nothing in CI ever saw the version that users got.
+A range is a promise about code that does not exist yet; a pin is a statement about the
+versions this release was actually tested against. Raising one is a deliberate edit plus a
+test run, which is the point.
+
+Two of the pins carry their own reason:
+
+- **`telethon==1.44.0`** — TL layer 227. Earlier layers raise `TypeNotFoundError` on the
+  `Dialog` constructor (`0xfc89f7f3`) that Telegram now returns from `getDialogs`.
+- **`uvicorn==0.52.1`** — a direct dependency, not merely `mcp`'s. `_serve_http` imports it by
+  name to drive the ASGI app itself (see §7, *Logging*), so relying on it arriving transitively
+  would be borrowing another package's dependency.
+
+`starlette` and the HTTP client stack arrive transitively through `mcp` 2.0, which now pulls
+`httpx2` and `starlette` 1.3.x. Only `tests/test_http_integration.py` touches those directly.
 
 ---
 
@@ -157,7 +185,8 @@ TelegramClientWrapper
   async get_me() -> UserInfo
   async get_dialogs(unread_only: bool, limit: int, offset: int) -> list[Dialog]
   async get_messages(dialog_id: int | None, username: str | None, name: str | None, limit: int, offset: int) -> list[Message]
-  async send_message(text: str, dialog_id: int | None, username: str | None, name: str | None) -> None
+  async send_message(text: str, dialog_id: int | None, username: str | None, name: str | None,
+                     reply_to: int | None, parse_mode: str | None) -> int | None   # sent message ID
   async send_files(file_paths: list[str], dialog_id: int | None, username: str | None, name: str | None, caption: str | None) -> list[int]
   async mark_read(dialog_id: int | None, username: str | None, name: str | None) -> None
   async _resolve_entity(dialog_id: int | None, username: str | None, name: str | None) -> Any   # internal
@@ -170,12 +199,14 @@ AuthFlow
     # orchestrates: connect, send_code_request, prompt OTP, sign_in, handle 2FA
 
 
-AppContext                             # dataclass used in FastMCP lifespan
+AppContext                             # dataclass yielded by the MCPServer lifespan
   client: TelegramClientWrapper
 
 
-server: FastMCP                        # module-level singleton in server.py
-  # tools: tg_me, tg_dialogs, tg_dialog, tg_send, tg_read
+mcp: MCPServer                         # module-level singleton in server.py
+  # 13 tools; the five documented in §7 are a representative subset.
+  # The authoritative list is READ_TOOLS + WRITE_TOOLS in server.py,
+  # and the full parameter reference is the README.
 ```
 
 ---
@@ -301,21 +332,32 @@ was sent, so a plain retry is correct.
 
 ## 7. `server.py` — MCP Tool Registration
 
-Uses `FastMCP` with a lifespan that connects/disconnects the Telegram client.
+```python
+from mcp.server.mcpserver import Context, MCPServer
+```
+
+Uses `MCPServer` with a lifespan that hands each session the process-wide Telegram client.
 
 ### Lifespan
 
 ```python
 @asynccontextmanager
-async def lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
-    config = Config.from_env()
-    client = TelegramClientWrapper(config)
-    await client.connect()      # raises RuntimeError if not authorized
-    try:
+async def lifespan(server: MCPServer) -> AsyncIterator[AppContext]:
+    client = await shared_client.acquire()   # connects on first use;
+    try:                                     # raises RuntimeError if not authorized
         yield AppContext(client=client)
     finally:
-        await client.disconnect()
+        await shared_client.release()
 ```
+
+The lifespan does **not** build its own `TelegramClientWrapper` — see
+*`SharedTelegramClient`* below for why that would be a bug under `sse`.
+
+### Tools
+
+There are 13 tools. The five spelled out below are the original set and are kept here because
+the rest follow the same shape; the complete parameter and return reference lives in the
+README, and the authoritative registry is `READ_TOOLS` + `WRITE_TOOLS` in `server.py`.
 
 ### Tool: `tg_me`
 
@@ -369,10 +411,12 @@ Parameters:
   username:  str | None = None  — Telegram @handle (leading @ optional)
   name:      str | None = None  — display name; least reliable (may match wrong contact)
   text:      str                — message text to send
+  reply_to:  int | None = None  — message ID to reply to
+  parse_mode: str = "markdown"  — 'markdown', 'html', or 'none' for literal text
   At least one of dialog_id / username / name must be provided.
   Priority: dialog_id > username > name
-Returns:     dict {"ok": true}
-Calls:       client.send_message(text, dialog_id, username, name)
+Returns:     dict {"ok": true, "message_id": n}
+Calls:       client.send_message(text, dialog_id, username, name, reply_to, parse_mode)
 INVARIANT:   MUST call telethon send_message(), NEVER SaveDraft/MessagesSaveDraft
 ```
 
@@ -394,7 +438,7 @@ Calls:       client.mark_read(dialog_id, username, name)
 ### Server instantiation
 
 ```python
-mcp = FastMCP("q0t-telegram-mcp", lifespan=lifespan)
+mcp = MCPServer("q0t-telegram-mcp", lifespan=lifespan)
 # tools registered by register_tools(mcp, readonly=...) — see below
 ```
 
@@ -411,7 +455,14 @@ async def tg_me(ctx: Context) -> dict:
     return dataclasses.asdict(user_info)
 ```
 
-The `ctx` parameter is automatically injected by FastMCP when the function signature includes it. All other parameters become the tool's MCP parameter schema.
+The `ctx` parameter is automatically injected by the server when the function signature includes it. All other parameters become the tool's MCP parameter schema.
+
+Parameter descriptions and JSON types come from `Annotated[...]` with a pydantic `Field` and,
+for the optional selectors, an explicit `WithJsonSchema`. `Optional[X]` is used rather than
+`X | None` on purpose: some MCP clients render the union as an `anyOf` and then report the
+type as "unknown", and the `Optional` + `WithJsonSchema` pairing is what pins the advertised
+type down. None of this changed with the move to `mcp` 2.0 — the generated `inputSchema` is
+byte-identical.
 
 ### Read-only mode and conditional registration
 
@@ -424,14 +475,18 @@ READ_TOOLS  = [tg_me, tg_dialogs, tg_dialog, tg_search, tg_download]
 WRITE_TOOLS = [tg_send, tg_send_file, tg_forward, tg_read, tg_click,
                tg_react, tg_delete, tg_edit]
 
-def register_tools(server: FastMCP, *, readonly: bool) -> None:
-    for fn in READ_TOOLS:
-        server.add_tool(fn)
-    if readonly:
-        return
-    for fn in WRITE_TOOLS:
-        server.add_tool(fn)
+def register_tools(server: MCPServer, *, readonly: bool) -> None:
+    registered = set(server._tool_manager._tools)
+    tools = READ_TOOLS if readonly else READ_TOOLS + WRITE_TOOLS
+    for fn in tools:
+        if fn.__name__ not in registered:
+            server.add_tool(fn)
 ```
+
+Registration is idempotent: `mcp` is a module-level singleton, so a second `run_server()` in
+the same process (tests do this) would otherwise re-add every tool and emit duplicate-tool
+warnings that change nothing. A genuine collision — two different functions claiming one name —
+is caught by the partition test instead, not silently absorbed here.
 
 `readonly_from_env()` accepts `1`/`true`/`yes` in any case, after stripping whitespace;
 everything else — including unset and blank — means "off", so no pre-0.7.0 configuration
@@ -456,7 +511,6 @@ def run_server(config: TransportConfig | None = None) -> None:
     if not config.is_http:
         mcp.run()          # stdio; blocks
         return
-    _apply_http_settings(mcp, config)
     _warn_if_exposed(config)
     _serve_http(mcp, config)
 ```
@@ -475,17 +529,32 @@ attaching over HTTP.
 
 #### `SharedTelegramClient` — the part that is easy to get wrong
 
-FastMCP enters the lifespan **per MCP session, not per process**: the low-level server does
-`enter_async_context(self.lifespan(self))` inside `Server.run()`
-(`mcp/server/lowlevel/server.py`), and the streamable-HTTP session manager calls
-`Server.run()` once for every connecting client
-(`mcp/server/streamable_http_manager.py::_handle_stateful_request`).
+How often the lifespan is entered is **not** a property of the server; it is a property of the
+transport, and it differs between them:
 
-Under stdio that distinction never mattered — one process, one client, one session. Under
-HTTP it is decisive: a lifespan that builds its own `TelegramClientWrapper` would open one
-Telethon client **per connected client, inside one process**, reproducing exactly the failure
-HTTP mode exists to eliminate. `tests/test_http_integration.py` asserts against this
-directly, and reverting the sharing makes it fail with `assert 5 == 1`.
+| Transport | Lifespan entered | Consequence |
+|-----------|------------------|-------------|
+| stdio | once per process | One process, one client — never mattered |
+| streamable HTTP (`http`) | once per process, by the session manager | Since `mcp` 2.0 (was: per MCP session) |
+| `sse` | **once per connected client** | `sse_app` calls `Server.run()` inside each connection |
+
+The mechanism is the same in all three: the low-level server does
+`enter_async_context(self.lifespan(self))` inside `Server.run()`
+(`mcp/server/lowlevel/server.py`). What changed in `mcp` 2.0 is who calls `Server.run()` for
+streamable HTTP — the session manager now runs it once for its own lifetime, rather than once
+per connecting client as `mcp` 1.x did.
+
+That fix does not retire the shared client, because `sse` still behaves the old way. A
+lifespan that built its own `TelegramClientWrapper` would, under `sse`, open one Telethon
+client **per connected client inside one process** — reproducing exactly the failure the HTTP
+transport exists to eliminate. The shared client stays until `sse` is dropped.
+
+Worth knowing before touching this: the regression test no longer catches the mistake.
+`tests/test_http_integration.py` asserts `len(created) == 1` across five concurrent clients,
+which under `mcp` 1.x failed with `assert 5 == 1` the moment sharing was removed. It runs
+against `streamable_http_app`, so under `mcp` 2.0 it now passes either way — the session
+manager alone keeps the count at one. Nothing exercises `sse_app`'s lifespan, so the only
+thing standing between a "simplifying" refactor and `AUTH_KEY_DUPLICATED` is this paragraph.
 
 So the client lives in a module-level `SharedTelegramClient`:
 
@@ -500,29 +569,102 @@ Concurrent tool calls are *not* serialised. Telethon multiplexes requests on one
 itself, and a lock around the client would serialise all Telegram traffic for no benefit; the
 integration tests cover parallel calls on one session and across sessions.
 
+#### What the per-process lifespan changed for `http` users
+
+The reference counting still works, but under streamable HTTP the count now goes to one when
+the process starts and back to zero when it stops, instead of tracking connected clients. That
+is visible from outside in three ways, and all three are improvements worth stating plainly:
+
+- **The Telegram connection is held for the process's whole life**, not released the moment
+  the last client disconnects. A client reconnecting after an idle gap no longer pays for a
+  fresh Telethon connect.
+- **Connecting happens at process startup**, not on the first MCP session. Failures surface
+  when you start the server rather than during someone's first tool call.
+- **An unauthorized session now stops the server from starting at all.** uvicorn reports
+  `Application startup failed` and the `RuntimeError("Not authorized…")` from `connect()`
+  propagates out of the lifespan. Under `mcp` 1.x the process started happily, `/health`
+  answered `200`, and only tool calls failed.
+
+That last one is a deliberate trade and the reason it is documented rather than smoothed over:
+a process that is up but cannot do anything is the worse failure, because monitoring reports
+it healthy. Now `/health` answering at all implies Telegram is connected. The cost is that a
+supervisor restarting a server whose session was revoked gets a crash loop instead of a
+running-but-useless process — which is the correct signal, and `q0t-telegram-mcp check`
+(§8a) is how you find out before starting.
+
 #### Listen address is the access control
 
 The server has no authentication of its own and grants full access to the account behind its
 session, so it binds `127.0.0.1` by default. A non-loopback bind is permitted — the operator
-may be inside an isolated container — but warns on stderr. FastMCP's DNS-rebinding
-protection ships allowing localhost `Host` headers only, so `_apply_http_settings` widens the
-allowances to match the chosen address: warning about a bind and then rejecting every request
-to it would be the worst of both worlds. Those allowances are rebuilt from the shipped
-defaults on each call rather than appended to, so applying two configurations in one process
-cannot accumulate stale entries.
+may be inside an isolated container — but warns on stderr.
+
+`mcp` 2.0 moved this configuration off the server object. There is no `settings.host`,
+`settings.port`, or `settings.transport_security` any more; the address goes to the app
+factory and to uvicorn, and the DNS-rebinding policy is an argument:
+
+```python
+security = _transport_security(config)
+app = server.streamable_http_app(host=config.host, transport_security=security)
+#     server.sse_app(host=config.host, transport_security=security)  # --transport sse
+uvicorn.Server(uvicorn.Config(app, host=config.host, port=config.port, …)).run()
+```
+
+The old `_apply_http_settings(server, config)`, which mutated the server in place, is gone.
+`_transport_security(config)` replaces it as a pure function returning
+`TransportSecuritySettings`, and it is always passed explicitly — never left to the SDK:
+
+```python
+def _transport_security(config: TransportConfig) -> TransportSecuritySettings:
+    hosts   = list(_BASE_ALLOWED_HOSTS)      # "127.0.0.1:*", "localhost:*", "[::1]:*"
+    origins = list(_BASE_ALLOWED_ORIGINS)    # the http:// spellings of the same
+    if not config.is_loopback:
+        hosts   += [config.host, f"{config.host}:*"]
+        origins += [f"http://{config.host}", f"http://{config.host}:*"]
+    return TransportSecuritySettings(enable_dns_rebinding_protection=True,
+                                     allowed_hosts=hosts, allowed_origins=origins)
+```
+
+Two properties matter, for different reasons:
+
+- **`enable_dns_rebinding_protection=True` unconditionally.** Given
+  `transport_security=None`, `mcp` 2.0 turns the protection on only when it recognises the
+  host as loopback and otherwise leaves it **off entirely**. Off-host is precisely the case
+  that needs it, so accepting the default would silently drop a defence at the moment it
+  starts mattering. Widening the allowances is the deliberate choice; dropping them is not.
+- **Rebuilt from the loopback base on every call**, never appended to a shared object. The
+  base is a module-level tuple (`_BASE_ALLOWED_HOSTS` / `_BASE_ALLOWED_ORIGINS`), spelled out
+  here rather than read back off the server, since `mcp` 2.0 no longer exposes it. Two
+  configurations applied in one process — tests do this — cannot accumulate allowances for an
+  address no longer in use.
+
+The allowances are widened rather than left at localhost-only because warning about a
+non-loopback bind and then rejecting every request that arrives at it would be the worst of
+both worlds: the user asked for that address.
 
 #### Logging
 
-`_serve_http` drives uvicorn directly rather than through `FastMCP.run`, which hardcodes its
+`_serve_http` drives uvicorn directly rather than through `MCPServer.run`, which hardcodes its
 own uvicorn config and leaves no way to redirect logging. uvicorn's stock configuration sends
 the access log to **stdout**; everything is moved to stderr so diagnostics land in one place
-regardless of transport. Verified live: with `--transport http`, stdout stays empty.
+regardless of transport. Verified live: with `--transport http`, stdout stays empty. This is
+also why `uvicorn` is a declared dependency of this package (§3) — `_serve_http` imports it by
+name.
 
 #### `/health`
 
 Registered with `@mcp.custom_route`, so it answers without an MCP session. Deliberately dull —
 status, package name, version, and the count of active sessions. Nothing configuration- or
 credential-derived, because anything that can reach the port can read it.
+
+Since 0.10.0 it carries an implicit guarantee it did not have before: because the lifespan
+runs at process startup under streamable HTTP, a `200` from `/health` means the Telegram
+client is connected. A server with a dead session never gets far enough to answer.
+
+The same change reinterprets `active_sessions`. It reports `SharedTelegramClient`'s reference
+count, which is a count of *holds on the client*, not of attached clients — under `http` it is
+`1` from startup to shutdown regardless of how many clients are connected, while under `sse`
+it still tracks connections. It stays in the payload as a liveness signal, but nothing should
+read it as a client count.
 
 ---
 
@@ -765,9 +907,9 @@ session_path = Path.cwd() / ".telegram-mcp" / "session"
 | `auth.py` | Telethon auth errors | Catch specific exceptions, print friendly message, `sys.exit(1)` |
 | `client.py` | Not authorized at startup | Raise `RuntimeError` with human-readable message |
 | `client.py` | Entity not found | Catch Telethon lookup errors, raise `ValueError(f"Dialog not found: {name}")` |
-| `client.py` | Connection errors | Let them propagate (unexpected; FastMCP will surface to MCP caller) |
+| `client.py` | Connection errors | Let them propagate (unexpected; `MCPServer` will surface to MCP caller) |
 | `server.py` tools | `ValueError` from client | Return `{"error": str(e)}` in the tool response (don't crash the server) |
-| `server.py` tools | `RuntimeError` from client | Propagate — FastMCP will turn it into an MCP error response |
+| `server.py` tools | `RuntimeError` from client | Propagate — `MCPServer` will turn it into an MCP error response |
 | `config.py` | Missing env vars | Raise `EnvironmentError` immediately at startup (fail fast) |
 
 ### Tool error response format
@@ -792,13 +934,18 @@ This allows the MCP caller (Claude) to report the issue without crashing the ser
 
 ### Where the session lives
 
-`Path.cwd() / ".telegram-mcp" / "session"` — Telethon creates `session.session` at that location.
+`Path.cwd() / ".telegram-mcp" / "session"` by default — Telethon creates `session.session` at
+that location. `TG_SESSION_PATH` (or `auth --session`) overrides it verbatim.
 
 ### How it is found at runtime
 
-`Config.from_env()` always computes `Path.cwd() / ".telegram-mcp" / "session"`. This means:
+`Config.from_env()` consults `TG_SESSION_PATH` first and falls back to the cwd-relative
+default. With no override that means:
 - The MCP server must be started from the same directory where `auth` was run.
 - For Claude Code, set `cwd` in `.mcp.json` if the default working directory differs.
+
+With an override, neither applies — the path is absolute and the working directory stops
+mattering, which is what makes several accounts from one directory possible.
 
 ### Session persistence
 
@@ -836,7 +983,7 @@ In the Go reference (`serve.go`), the MCP tool advertises parameter `to` but the
 Claude Code
     │  call_tool("tg_send", {dialog_id: 123456789, text: "Hello"})
     ▼
-FastMCP (server.py)
+MCPServer (server.py)
     │  invoke tg_send(dialog_id=123456789, text="Hello", ctx=...)
     ▼
 TelegramClientWrapper (client.py)
@@ -850,7 +997,7 @@ Telethon → Telegram MTProto API
 Telegram delivers message to Alice
     │
     ◄── success
-FastMCP returns {"ok": true} to Claude Code
+MCPServer returns {"ok": true, "message_id": …} to Claude Code
 ```
 
 ### Auth flow

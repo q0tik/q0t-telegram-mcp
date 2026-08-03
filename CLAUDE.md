@@ -35,7 +35,7 @@ q0t-telegram-mcp/
 │       ├── config.py         ← Config dataclass, env + session path
 │       ├── media.py          ← album grouping by media kind, path checks
 │       ├── models.py         ← UserInfo, Dialog, Message dataclasses
-│       └── server.py         ← FastMCP instance, tool registrations
+│       └── server.py         ← MCPServer instance, tool registrations
 ├── tasks/
 │   └── task-1.md
 ├── CHANGELOG.md
@@ -80,9 +80,15 @@ process — and therefore one Telethon session, which is the only safe arrangeme
 processes on one session file give `database is locked`; copies of the file give
 `AUTH_KEY_DUPLICATED` and a real logout).
 
-**The trap:** FastMCP enters the lifespan per *MCP session*, not per process, so anything
-built inside `lifespan` is built once per connected client. The Telegram client therefore
-lives in the module-level `SharedTelegramClient`, not in `lifespan`. Do not move it back.
+**The trap:** under `--transport sse` the lifespan is entered per *connected client*, not per
+process — `sse_app` calls `Server.run()` inside each connection — so anything built inside
+`lifespan` is built once per client. The Telegram client therefore lives in the module-level
+`SharedTelegramClient`, not in `lifespan`. Do not move it back while sse is supported.
+
+mcp 2.0 fixed this for streamable HTTP: its session manager enters the lifespan once per
+process. Two things follow for http mode — the Telegram connection is held for the life of
+the server instead of being dropped when the last client leaves, and an unauthorized session
+fails the boot outright rather than letting the process start and serve `/health`.
 
 ## Agent Workflow
 

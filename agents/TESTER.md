@@ -55,7 +55,7 @@ With `asyncio_mode = "auto"` in `pyproject.toml`, all `async def` test methods r
 
 ### Mock pattern for MCP Context
 
-The FastMCP `ctx` object needs this shape to access the client wrapper:
+The `ctx` object (`mcp.server.mcpserver.Context`) needs this shape to access the client wrapper:
 
 ```python
 ctx.request_context.lifespan_context.client = wrapper
@@ -99,9 +99,9 @@ Provide a MagicMock fallback so fixtures still work without the real module.
 
 `telethon.utils.get_display_name(sender)` inspects the real telethon type attributes in a way that returns `''` for `MagicMock` objects. The client code does `get_display_name(sender) or None`, so the `sender` field in a `Message` is `None` when using mocks. Tests should assert `hasattr(m, "sender")` rather than expecting a non-None string.
 
-### Calling FastMCP tool functions directly in tests
+### Calling tool functions directly in tests
 
-FastMCP tool functions decorated with `@mcp.tool()` remain plain `async def` functions. You can import and call them directly:
+Tool functions are registered with `server.add_tool(fn)` and remain plain `async def` functions. You can import and call them directly:
 
 ```python
 from tg_mcp.server import tg_me, tg_send, tg_dialogs, tg_dialog, tg_read
@@ -140,9 +140,9 @@ assert draft_calls == []
 
 This is more robust than relying solely on the `AssertionError` side_effect set in conftest.
 
-### Unreachable lines: click CLI and FastMCP lifespan
+### Unreachable lines: click CLI and the lifespan
 
-The `__init__.py` click CLI dispatch (lines that call `run_server()` or `asyncio.run(_run_auth(...))`) and the FastMCP `lifespan` function (which requires a real startup context) are not easily unit-testable. They account for ~6% of the codebase. The remaining 94% coverage exceeds the 80% requirement, so leave these as integration concerns.
+The `__init__.py` click CLI dispatch (lines that call `run_server()` or `asyncio.run(_run_auth(...))`) and the `lifespan` function (which requires a real startup context) are not easily unit-testable. They account for ~6% of the codebase. The remaining 94% coverage exceeds the 80% requirement, so leave these as integration concerns.
 
 ### Config.from_env() test: clear environment properly
 
