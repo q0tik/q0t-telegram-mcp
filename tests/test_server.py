@@ -20,7 +20,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from tg_mcp.client import TelegramClientWrapper
+from tg_mcp.client import PartialSendError, TelegramClientWrapper
 from tg_mcp.models import Dialog, Message, UserInfo
 from tg_mcp.server import (
     tg_click,
@@ -87,7 +87,7 @@ def _make_mock_client():
         )
     ])
     client.send_message = AsyncMock(return_value=100)
-    client.send_file = AsyncMock(return_value=200)
+    client.send_files = AsyncMock(return_value=[200])
     client.forward_message = AsyncMock(return_value=None)
     client.mark_read = AsyncMock(return_value=None)
     client.react = AsyncMock(return_value=None)
@@ -487,19 +487,29 @@ class TestTgSendFile:
     """Tests for the tg_send_file MCP tool."""
 
     async def test_tg_send_file_returns_ok(self, mock_client_wrapper) -> None:
-        """On success, tg_send_file() returns {"ok": True}."""
+        """On success, tg_send_file() returns {"ok": True} and every message ID."""
         client = _make_mock_client()
         ctx = _make_ctx(client)
-        result = await tg_send_file(ctx, name="Alice", file_path="/tmp/test.txt")
-        assert result == {"ok": True, "message_id": 200}
+        result = await tg_send_file(ctx, name="Alice", file_paths=["/tmp/test.txt"])
+        assert result == {"ok": True, "message_ids": [200]}
+
+    async def test_tg_send_file_returns_all_ids_for_several_files(
+        self, mock_client_wrapper
+    ) -> None:
+        """Several files produce several messages; all their IDs come back."""
+        client = _make_mock_client()
+        client.send_files = AsyncMock(return_value=[200, 201, 202])
+        ctx = _make_ctx(client)
+        result = await tg_send_file(ctx, name="Alice", file_paths=["/a.png", "/b.png", "/c.png"])
+        assert result == {"ok": True, "message_ids": [200, 201, 202]}
 
     async def test_tg_send_file_passes_all_params(self, mock_client_wrapper) -> None:
-        """tg_send_file() passes file_path, caption, and dialog selector to client."""
+        """tg_send_file() passes file_paths, caption, and dialog selector to client."""
         client = _make_mock_client()
         ctx = _make_ctx(client)
-        await tg_send_file(ctx, name="Alice", file_path="/tmp/f.txt", caption="hi")
-        client.send_file.assert_called_once_with(
-            file_path="/tmp/f.txt", dialog_id=None, username=None, name="Alice", caption="hi"
+        await tg_send_file(ctx, name="Alice", file_paths=["/tmp/f.txt"], caption="hi")
+        client.send_files.assert_called_once_with(
+            file_paths=["/tmp/f.txt"], dialog_id=None, username=None, name="Alice", caption="hi"
         )
 
     async def test_tg_send_file_no_selector_raises(self, mock_client_wrapper) -> None:
@@ -507,24 +517,40 @@ class TestTgSendFile:
         client = _make_mock_client()
         ctx = _make_ctx(client)
         with pytest.raises(ValueError, match="One of dialog_id, username, or name"):
-            await tg_send_file(ctx, file_path="/tmp/f.txt")
+            await tg_send_file(ctx, file_paths=["/tmp/f.txt"])
 
     async def test_tg_send_file_error_returns_error_dict(self, mock_client_wrapper) -> None:
-        """When send_file() raises ValueError, tg_send_file returns {"error": ...}."""
+        """When send_files() raises ValueError, tg_send_file returns {"error": ...}."""
         client = _make_mock_client()
-        client.send_file = AsyncMock(side_effect=ValueError("Dialog not found"))
+        client.send_files = AsyncMock(side_effect=ValueError("Dialog not found"))
         ctx = _make_ctx(client)
-        result = await tg_send_file(ctx, name="Nobody", file_path="/tmp/f.txt")
+        result = await tg_send_file(ctx, name="Nobody", file_paths=["/tmp/f.txt"])
         assert "error" in result
+
+    async def test_tg_send_file_partial_failure_reports_sent_ids(
+        self, mock_client_wrapper
+    ) -> None:
+        """
+        A partial send returns both the error and what was delivered, so the
+        caller does not retry the whole list and post the first album twice.
+        """
+        client = _make_mock_client()
+        client.send_files = AsyncMock(
+            side_effect=PartialSendError("RuntimeError: boom", message_ids=[200, 201])
+        )
+        ctx = _make_ctx(client)
+        result = await tg_send_file(ctx, name="Alice", file_paths=["/a.png", "/b.pdf"])
+        assert result["message_ids"] == [200, 201]
+        assert "boom" in result["error"]
 
     async def test_tg_send_file_with_dialog_id(self, mock_client_wrapper) -> None:
         """tg_send_file() works with dialog_id."""
         client = _make_mock_client()
         ctx = _make_ctx(client)
-        result = await tg_send_file(ctx, dialog_id=123, file_path="/tmp/f.txt")
-        assert result == {"ok": True, "message_id": 200}
-        client.send_file.assert_called_once_with(
-            file_path="/tmp/f.txt", dialog_id=123, username=None, name=None, caption=None
+        result = await tg_send_file(ctx, dialog_id=123, file_paths=["/tmp/f.txt"])
+        assert result == {"ok": True, "message_ids": [200]}
+        client.send_files.assert_called_once_with(
+            file_paths=["/tmp/f.txt"], dialog_id=123, username=None, name=None, caption=None
         )
 
 

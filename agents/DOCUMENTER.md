@@ -42,6 +42,14 @@ Good documentation explains the *why*, not just the *what*. Someone unfamiliar w
 
 ### Obsidian Notes (Russian)
 
+- **The obsidian MCP tools are not always available.** When they are not, the vault is a plain
+  directory — `/Users/q0tik/Documents/q0tik-obsidian-personal`, notes at
+  `projects/telegram-mcp/{overview,setup,tools,architecture}.md` — and normal Read/Write/Edit
+  work fine. Find it with `find ~ -maxdepth 4 -name .obsidian -type d`.
+- **Check the notes on every release, not only when the note's own topic changed.** They had
+  drifted from 0.2 to 0.9 — still claiming "5 tools", no `tg_send_file`, no reactions, no
+  buttons, no `check`, no readonly, no HTTP — because releases in between never revisited them.
+  The repo docs get the attention; the vault silently rots.
 - Use `mcp__obsidian__write_note` with `path` relative to the vault root (no leading slash).
 - All 4 notes can be written in a single parallel call — no dependencies between them.
 - Tables work well for parameter lists and environment variables.
@@ -49,6 +57,34 @@ Good documentation explains the *why*, not just the *what*. Someone unfamiliar w
 - Keep the note about the `tg_send` invariant prominent in both the overview and architecture notes — it's the whole reason the project exists.
 - `mcp__obsidian__patch_note` with `insertAfter` is NOT supported — it requires `oldString`/`newString`. Use `mcp__obsidian__write_note` with `overwrite: true` for full rewrites.
 - When a tool's parameter set changes significantly (e.g. adding new selectors), rewrite the entire tools.md note rather than trying to patch individual sections — it's faster and avoids stale content.
+
+### `docs/architecture.md` — what belongs there vs the README
+
+- The README answers "how do I call this"; the architecture doc answers "why is it shaped this
+  way". When a feature lands, the README gets the rules, the architecture doc gets the
+  *reasons* — why a module is separate, why validation happens before the first side effect,
+  why a bespoke exception exists.
+- Sections 5 (class diagram) and 6 (wrapper methods) list only a subset of
+  `TelegramClientWrapper` — several tools were added without touching them. Do not try to
+  backfill everything at once; add the method you are documenting and move on.
+- `docs/superpowers/{specs,plans}/` are **dated historical records** of past design sessions.
+  They describe the state of the world on their date and must not be edited to match current
+  behaviour — stale-looking lines there are correct as history.
+- Bump the version inside the `/health` example JSON in the README on every release; grep for
+  the old version number, it hides in prose.
+
+### Documenting a breaking parameter change
+
+- Say the old name and the new name in the same sentence ("`file_paths` (list) instead of
+  `file_path` (string)"). A reader arriving with the old call in hand needs to recognise their
+  own mistake, and "takes a list" alone does not do that.
+- Document the *partial-failure* contract wherever one exists. If a tool can leave work half
+  done, the docs must say what the caller should do next — for `tg_send_file` that is "resend
+  only the missing part, do not retry the whole list" — otherwise the obvious reaction
+  (retry everything) is the wrong one.
+- Ground constraints in the platform's rule, not in our implementation: "Telegram refuses an
+  album that mixes media classes" explains the behaviour and survives a refactor; "we call
+  `group_for_albums`" explains nothing to a user.
 
 ### Documenting multi-selector parameters
 

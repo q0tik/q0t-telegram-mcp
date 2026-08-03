@@ -12,7 +12,7 @@ from mcp.server.fastmcp import Context, FastMCP
 from pydantic import Field, WithJsonSchema
 from starlette.responses import JSONResponse
 
-from .client import TelegramClientWrapper
+from .client import PartialSendError, TelegramClientWrapper
 from .config import Config, TransportConfig
 
 
@@ -197,25 +197,29 @@ async def tg_send(
 
 async def tg_send_file(
     ctx: Context,
-    file_path: Annotated[str, Field(description="Local filesystem path to the file to send.")],
+    file_paths: Annotated[list[str], Field(description="Local filesystem paths to send. One path or many; several files are sent as an album.", min_length=1)],
     dialog_id: Annotated[Optional[int], Field(description="Numeric ID from tg_dialogs. Most reliable, no ambiguity."), WithJsonSchema({"type": "integer", "description": "Numeric ID from tg_dialogs. Most reliable, no ambiguity."})] = None,
     username: Annotated[Optional[str], Field(description="Telegram @handle, e.g. 'adilet_c' (leading @ optional)."), WithJsonSchema({"type": "string", "description": "Telegram @handle, e.g. 'adilet_c' (leading @ optional)."})] = None,
     name: Annotated[Optional[str], Field(description="Display name. Use only when dialog_id/username are unavailable; may be ambiguous."), WithJsonSchema({"type": "string", "description": "Display name. Use only when dialog_id/username are unavailable; may be ambiguous."})] = None,
-    caption: Annotated[Optional[str], Field(description="Optional text caption to attach to the file."), WithJsonSchema({"type": "string", "description": "Optional text caption to attach to the file."})] = None,
+    caption: Annotated[Optional[str], Field(description="Optional text caption. With several files it captions the album as a whole."), WithJsonSchema({"type": "string", "description": "Optional text caption. With several files it captions the album as a whole."})] = None,
 ) -> dict:
-    """Send a file to a Telegram dialog. Supply exactly one of dialog_id, username, or name. Priority: dialog_id > username > name."""
+    """Send one or more files to a Telegram dialog as an album. Photos/videos, audio, and documents cannot share one album, so a mixed list is sent as one album per kind. Supply exactly one of dialog_id, username, or name. Priority: dialog_id > username > name."""
     if dialog_id is None and username is None and name is None:
         raise ValueError("One of dialog_id, username, or name must be provided")
     client: TelegramClientWrapper = ctx.request_context.lifespan_context.client
     try:
-        message_id = await client.send_file(
-            file_path=file_path,
+        message_ids = await client.send_files(
+            file_paths=file_paths,
             dialog_id=dialog_id,
             username=username,
             name=name,
             caption=caption,
         )
-        return {"ok": True, "message_id": message_id}
+        return {"ok": True, "message_ids": message_ids}
+    except PartialSendError as e:
+        # Part of the album list is already in the dialog. Saying only "error"
+        # would invite the caller to retry the whole list and double-post it.
+        return {"error": _error_message(e), "message_ids": e.message_ids}
     except Exception as e:
         return {"error": _error_message(e)}
 

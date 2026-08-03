@@ -12,6 +12,7 @@
 | MCP server | `src/tg_mcp/server.py` | FastMCP instance, conditional tool registration (`TG_READONLY`), stdio/HTTP transports, process-wide Telegram client |
 | Telegram client wrapper | `src/tg_mcp/client.py` | Async wrapper around `TelegramClient` |
 | Data models | `src/tg_mcp/models.py` | `UserInfo`, `Dialog`, `Message` dataclasses |
+| Media grouping | `src/tg_mcp/media.py` | Splits a file list into Telegram-legal albums; path checks. Pure functions, no Telethon |
 | Auth CLI | `src/tg_mcp/auth.py` | Interactive auth flow: send code, OTP prompt, 2FA |
 | Session check | `src/tg_mcp/check.py` | `check` subcommand: is the saved session still authorized? |
 | Configuration | `src/tg_mcp/config.py` | Env var reading (`TG_APP_ID`, optional `TG_API_HASH`/`TG_SESSION_PATH`), session path resolution, `TransportConfig` |
@@ -40,6 +41,7 @@ q0t-telegram-mcp/
 │       ├── check.py              ← session liveness check
 │       ├── client.py             ← TelegramClientWrapper
 │       ├── config.py             ← Config dataclass, env + path resolution
+│       ├── media.py              ← album grouping by media kind, path checks
 │       ├── models.py             ← UserInfo, Dialog, Message
 │       └── server.py             ← FastMCP instance, tool registrations
 ├── tasks/
@@ -52,6 +54,7 @@ q0t-telegram-mcp/
     ├── test_client.py
     ├── test_config.py
     ├── test_http_integration.py
+    ├── test_media.py
     ├── test_models.py
     ├── test_readonly.py
     ├── test_server.py
@@ -155,6 +158,7 @@ TelegramClientWrapper
   async get_dialogs(unread_only: bool, limit: int, offset: int) -> list[Dialog]
   async get_messages(dialog_id: int | None, username: str | None, name: str | None, limit: int, offset: int) -> list[Message]
   async send_message(text: str, dialog_id: int | None, username: str | None, name: str | None) -> None
+  async send_files(file_paths: list[str], dialog_id: int | None, username: str | None, name: str | None, caption: str | None) -> list[int]
   async mark_read(dialog_id: int | None, username: str | None, name: str | None) -> None
   async _resolve_entity(dialog_id: int | None, username: str | None, name: str | None) -> Any   # internal
 
@@ -239,6 +243,16 @@ class TelegramClientWrapper:
 - **CRITICAL**: calls `await self._client.send_message(entity, text)`
 - NEVER calls anything draft-related (`SaveDraft`, `MessagesSaveDraft`, `draft`, etc.)
 
+#### `async send_files(file_paths: list[str], …, caption: str | None) -> list[int]`
+- Takes a **list** of paths — a single file is a one-item list — and returns the ID of every
+  message that was sent.
+- Validates before it sends: an empty list, or any path that is not a regular file, raises
+  `ValueError` naming the offenders. This is deliberate atomicity — a bad path discovered
+  halfway through would leave the first albums delivered and the rest lost, which is the one
+  outcome a caller cannot clean up automatically.
+- Splits the list with `media.group_for_albums` and sends one album per group;
+  `caption` is attached to the first album only, the way Telegram captions a group once.
+
 #### `async mark_read(dialog_id: int | None, username: str | None, name: str | None) -> None`
 - Resolves entity: `entity = await self._resolve_entity(dialog_id=dialog_id, username=username, name=name)`
 - Calls `await self._client.send_read_acknowledge(entity)`
@@ -261,6 +275,27 @@ All three entity-accepting methods delegate to `_resolve_entity`, which applies 
    value that resolved before resolves to the same entity now.
 
 Raises `ValueError("One of dialog_id, username, or name must be provided")` if all three are `None`.
+
+### Albums — `media.py` and `PartialSendError`
+
+Telegram refuses an album that mixes media classes: photos and videos share one, audio tracks
+share another, everything else travels as documents. A caller handing `tg_send_file` an
+arbitrary list has no reason to know that, so `media.group_for_albums` splits the list by
+class — by file extension — and `send_files` sends one album per group, in the order
+visual → audio → document. Telethon already chunks a group by Telegram's ten-item album
+limit, so that is not re-implemented here.
+
+`media.py` is a separate module because none of this needs a network or a Telethon type:
+`album_kind`, `group_for_albums`, `expand_paths`, and `missing_files` are pure functions over
+strings and can be tested without a client at all (`tests/test_media.py`).
+
+`PartialSendError` covers the one failure a caller cannot reason about otherwise. When a list
+splits into several albums and a later one fails, the earlier ones are already in the dialog
+and cannot be recalled. Reporting a bare error would invite a retry of the whole list and
+double-post the delivered part, so the exception carries `message_ids` and `tg_send_file`
+returns `{"error": …, "message_ids": [...]}` — enough for the caller to resend only what is
+missing. A failure on the *first* album carries nothing and is re-raised unchanged; nothing
+was sent, so a plain retry is correct.
 
 ---
 

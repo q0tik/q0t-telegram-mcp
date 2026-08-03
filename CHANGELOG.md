@@ -2,6 +2,33 @@
 
 Notable changes per release. Versions before 0.6.0 are recorded only in git history.
 
+## 0.9.0
+
+### Added
+
+- **`tg_send_file` sends several files at once.** Pass a list and they arrive as one
+  album — the same thing Telegram does when a person drags a handful of screenshots into
+  a chat. `caption` captions the album as a whole. More than ten files are split into
+  albums of ten by Telethon.
+- **Mixed media types are grouped, not rejected.** Telegram refuses an album holding both
+  a photo and a PDF, so a mixed list is split by kind (photos/videos, audio, documents)
+  and sent as one album per kind, visual first. Classification is by file extension
+  (`src/tg_mcp/media.py`).
+- **Paths are checked before anything is sent.** A missing path fails the whole call with
+  every bad path named, instead of delivering the first albums and then erroring. `~` is
+  expanded.
+- **Partial delivery is reported honestly.** If a later album fails after earlier ones went
+  through, `tg_send_file` returns `{"error": …, "message_ids": [ids already sent]}` — a bare
+  error would invite a retry that double-posts.
+
+### Changed
+
+- **Breaking: `tg_send_file` takes `file_paths` (list) instead of `file_path` (string), and
+  returns `message_ids` (list) instead of `message_id`.** A single file is a one-item list.
+  Keeping both parameters would have left two near-identical fields in the tool schema for a
+  model to choose between, which is a reliable way to get the wrong one.
+- `TelegramClientWrapper.send_file()` is now `send_files()` and returns `list[int]`.
+
 ## 0.8.0
 
 ### Added

@@ -22,7 +22,7 @@ Tools marked ✎ change state and are omitted entirely under
 | `tg_dialogs` | `unread_only` (bool, default `false`), `limit` (int, default `20`), `offset` (int, default `0`) | List of dialogs — each has `id`, `name`, `username` (or `null`), `unread_count`, type flags, `last_message`, `date` | List dialogs (chats, groups, channels) |
 | `tg_dialog` | `dialog_id` (int), `username` (str), or `name` (str) — at least one required; `limit` (int, default `20`), `offset` (int, default `0`) | List of messages | Get messages from a dialog |
 | `tg_send` ✎ | dialog selector — at least one required; `text` (str); `reply_to` (int, optional); `parse_mode` (`markdown` default, `html`, or `none`) | `{"ok": true, "message_id": n}` | Send a message — calls `SendMessage`, never `SaveDraft` |
-| `tg_send_file` ✎ | dialog selector — at least one required; `file_path` (str); `caption` (str, optional) | `{"ok": true, "message_id": n}` | Send a file to a dialog |
+| `tg_send_file` ✎ | dialog selector — at least one required; `file_paths` (list[str], one or many); `caption` (str, optional) | `{"ok": true, "message_ids": [n, …]}` | Send one or more files to a dialog; several files arrive as an album ([details](#sending-several-files)) |
 | `tg_forward` ✎ | `message_id` (int); one source `from_*` selector; one destination `to_*` selector | `{"ok": true}` | Forward a message from one dialog to another |
 | `tg_read` ✎ | `dialog_id` (int), `username` (str), or `name` (str) — at least one required | `{"ok": true}` | Mark all messages in a dialog as read |
 | `tg_click` ✎ | dialog selector; `message_id` (int); `text` (str, button label); `row`/`col` (int, optional) | `{answer, alert, message, url?}` | Press an inline keyboard button on a bot message; returns the callback answer and the (usually edited) message |
@@ -31,6 +31,43 @@ Tools marked ✎ change state and are omitted entirely under
 | `tg_delete` ✎ | dialog selector; `message_ids` (list[int]); `revoke` (bool, default `true`) | `{"ok": true, "deleted": n}` | Delete one or more messages |
 | `tg_search` | `query` (str); dialog selector (optional — omit for a global search); `limit` (int, default `20`) | List of messages (each with `chat_id`/`chat_name`) | Search messages by text, per-dialog or globally |
 | `tg_download` | dialog selector; `message_id` (int); `dest_dir` (str, optional) | `{path, media, size}` | Download a message's media (photo/voice/document/…) to disk |
+
+### Sending several files
+
+`tg_send_file` always takes a list, so one file is `["/path/one.png"]` and many are just a
+longer list. Files sent together arrive as an album, and `caption` captions that album as a
+whole rather than any single file:
+
+```json
+{"file_paths": ["/tmp/1.png", "/tmp/2.png", "/tmp/3.png"],
+ "username": "alice",
+ "caption": "three screenshots"}
+```
+```json
+{"ok": true, "message_ids": [101, 102, 103]}
+```
+
+Two Telegram rules shape the rest of the behaviour:
+
+- **An album cannot mix media classes.** Photos and videos may share one; audio files share
+  another; everything else travels as documents. A mixed list is therefore split by kind —
+  by file extension — and sent as one album per kind, visual first, with the caption on the
+  first. `["a.png", "b.pdf", "c.jpg"]` becomes an album of `a.png`+`c.jpg` and an album of
+  `b.pdf`, and `message_ids` covers both.
+- **An album holds at most ten items.** Longer runs are split into consecutive albums of ten.
+
+Paths are checked before anything is sent: if any path is missing, the call fails naming
+every bad one and nothing is delivered. `~` is expanded.
+
+If a later album fails after earlier ones succeeded, the result carries both — the error and
+the IDs that did go through:
+
+```json
+{"error": "PartialSendError: FloodWaitError: …", "message_ids": [101, 102]}
+```
+
+Retrying the whole list in that case would post the first album twice; resend only the part
+that is missing.
 
 ### Reactions
 
@@ -329,7 +366,7 @@ invoke the package with no arguments are unaffected.
 supervisor can tell the process is up without opening an MCP session:
 
 ```json
-{"status": "ok", "name": "q0t-telegram-mcp", "version": "0.8.0", "active_sessions": 2}
+{"status": "ok", "name": "q0t-telegram-mcp", "version": "0.9.0", "active_sessions": 2}
 ```
 
 ### ⚠️ Do not expose the port

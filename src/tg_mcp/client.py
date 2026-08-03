@@ -12,7 +12,31 @@ from telethon.tl.functions.messages import SendReactionRequest
 from telethon.tl.types import ReactionEmoji
 
 from .config import Config
+from .media import expand_paths, group_for_albums, missing_files
 from .models import Button, Dialog, Message, Reaction, UserInfo
+
+
+class PartialSendError(RuntimeError):
+    """Some albums reached Telegram before a later one failed.
+
+    Raised only by :meth:`TelegramClientWrapper.send_files`, so the caller can
+    report what was actually delivered instead of a bare error that implies
+    nothing was sent.
+    """
+
+    def __init__(self, message: str, message_ids: list[int]) -> None:
+        super().__init__(message)
+        self.message_ids = message_ids
+
+
+def _sent_ids(sent: Any) -> list[int]:
+    """Collect message IDs from Telethon's send_file result.
+
+    A list of files comes back as a list of messages, but a mocked or
+    single-item result may be one message, so both shapes are accepted.
+    """
+    messages = sent if isinstance(sent, (list, tuple)) else [sent]
+    return [mid for mid in (getattr(m, "id", None) for m in messages) if mid is not None]
 
 
 def _classify_button(b) -> Button:
@@ -284,32 +308,60 @@ class TelegramClientWrapper:
         )
         return getattr(sent, "id", None)
 
-    async def send_file(
+    async def send_files(
         self,
-        file_path: str,
+        file_paths: list[str],
         dialog_id: int | None = None,
         username: str | None = None,
         name: str | None = None,
         caption: str | None = None,
-    ) -> int | None:
-        """Send a file to a dialog.
+    ) -> list[int]:
+        """Send one or more files to a dialog as album(s).
+
+        Files of one media class travel as a single album; a list mixing
+        classes is split by :func:`media.group_for_albums`, because Telegram
+        rejects an album holding, say, a photo and a PDF. Telethon chunks each
+        group by ten on its own.
 
         Args:
-            file_path: Local filesystem path to the file to send.
+            file_paths: Local filesystem paths. One path is still a list.
             dialog_id: Numeric Telegram ID from tg_dialogs. Most reliable.
             username: Telegram @handle (leading @ optional).
             name: Dialog display name. Least reliable; resolved by scanning dialogs.
-            caption: Optional text caption to attach to the file.
+            caption: Optional text caption. Attached to the first album only,
+                the way Telegram captions a group of photos once.
 
         Returns:
-            The ID of the sent message.
+            The IDs of every message sent, in the order they were sent.
 
         Raises:
-            ValueError: If no dialog matching the provided selector can be found.
+            ValueError: If file_paths is empty, if any path is not a file, or
+                if no dialog matching the provided selector can be found.
+            PartialSendError: If a later album fails after earlier ones were
+                delivered. Carries the IDs of what did get through.
         """
+        if not file_paths:
+            raise ValueError("file_paths must contain at least one path")
+        paths = expand_paths(file_paths)
+        missing = missing_files(paths)
+        if missing:
+            raise ValueError(f"File(s) not found: {', '.join(missing)}")
+
         entity = await self._resolve_entity(dialog_id=dialog_id, username=username, name=name)
-        sent = await self._client.send_file(entity, file_path, caption=caption)
-        return getattr(sent, "id", None)
+        message_ids: list[int] = []
+        for index, group in enumerate(group_for_albums(paths)):
+            try:
+                sent = await self._client.send_file(
+                    entity, group, caption=caption if index == 0 else None
+                )
+            except Exception as e:
+                if message_ids:
+                    raise PartialSendError(
+                        f"{type(e).__name__}: {e}", message_ids=message_ids
+                    ) from e
+                raise
+            message_ids.extend(_sent_ids(sent))
+        return message_ids
 
     async def forward_message(
         self,

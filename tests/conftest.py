@@ -229,10 +229,11 @@ def mock_telegram_client(
 
     client.iter_dialogs = MagicMock(side_effect=lambda: _iter_dialogs_default())
 
-    # File sending
+    # File sending. Telethon returns a list of messages when handed a list of
+    # files, and send_files() always hands it a list — even for one file.
     sent_file = MagicMock()
     sent_file.id = 200
-    client.send_file.return_value = sent_file
+    client.send_file.return_value = [sent_file]
 
     # Message forwarding
     client.forward_messages.return_value = [MagicMock()]

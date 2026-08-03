@@ -21,7 +21,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from telethon.tl.functions.messages import SendReactionRequest
 
-from tg_mcp.client import TelegramClientWrapper, _pm
+from tg_mcp.client import PartialSendError, TelegramClientWrapper, _pm
 from tg_mcp.config import Config
 from tg_mcp.models import Dialog, Message, UserInfo
 
@@ -512,55 +512,191 @@ class TestSendMessage:
         assert call_kwargs.get("parse_mode") == "md"
 
 
-class TestSendFile:
-    """Tests for TelegramClientWrapper.send_file()."""
+@pytest.fixture
+def real_files(tmp_path):
+    """Create files on disk, since send_files() refuses paths that do not exist.
 
-    async def test_send_file_calls_telethon_send_file(
-        self, mock_client_wrapper, mock_telegram_client
+    Returns a helper: real_files("a.png", "b.pdf") -> [str, str].
+    """
+
+    def _make(*names: str) -> list[str]:
+        paths = []
+        for n in names:
+            f = tmp_path / n
+            f.write_bytes(b"x")
+            paths.append(str(f))
+        return paths
+
+    return _make
+
+
+def _messages(*ids: int) -> list:
+    """Build a Telethon-shaped list of sent messages carrying these IDs."""
+    out = []
+    for i in ids:
+        m = MagicMock()
+        m.id = i
+        out.append(m)
+    return out
+
+
+class TestSendFiles:
+    """Tests for TelegramClientWrapper.send_files()."""
+
+    async def test_send_files_calls_telethon_send_file_with_a_list(
+        self, mock_client_wrapper, mock_telegram_client, real_files
     ) -> None:
         """
-        send_file() calls _client.send_file(entity, file_path, caption=caption).
+        send_files() calls _client.send_file(entity, [paths], caption=caption).
 
-        Expected: mock_telegram_client.send_file is called once with the resolved
-        entity, file path, and caption.
+        Expected: one call, and the file argument is a list even for one file —
+        that list is what makes Telethon send an album.
         """
-        await mock_client_wrapper.send_file(name="Alice", file_path="/tmp/test.txt")
+        paths = real_files("test.txt")
+        await mock_client_wrapper.send_files(name="Alice", file_paths=paths)
         mock_telegram_client.send_file.assert_called_once()
+        assert mock_telegram_client.send_file.call_args.args[1] == paths
 
-    async def test_send_file_passes_caption(
-        self, mock_client_wrapper, mock_telegram_client
+    async def test_send_files_returns_all_message_ids(
+        self, mock_client_wrapper, mock_telegram_client, real_files
     ) -> None:
         """
-        send_file() forwards the caption kwarg to Telethon's send_file().
-
-        Expected: caption="Hello" is passed through.
+        The IDs of every message Telegram created are returned, not just the first.
         """
-        await mock_client_wrapper.send_file(
-            name="Alice", file_path="/tmp/test.txt", caption="Hello"
+        mock_telegram_client.send_file.return_value = _messages(201, 202, 203)
+        paths = real_files("1.png", "2.png", "3.png")
+        result = await mock_client_wrapper.send_files(name="Alice", file_paths=paths)
+        assert result == [201, 202, 203]
+
+    async def test_send_files_passes_caption(
+        self, mock_client_wrapper, mock_telegram_client, real_files
+    ) -> None:
+        """
+        send_files() forwards the caption kwarg to Telethon's send_file().
+        """
+        await mock_client_wrapper.send_files(
+            name="Alice", file_paths=real_files("test.txt"), caption="Hello"
         )
-        call_kwargs = mock_telegram_client.send_file.call_args
-        assert call_kwargs.kwargs.get("caption") == "Hello"
+        assert mock_telegram_client.send_file.call_args.kwargs.get("caption") == "Hello"
 
-    async def test_send_file_caption_none_by_default(
-        self, mock_client_wrapper, mock_telegram_client
+    async def test_send_files_caption_none_by_default(
+        self, mock_client_wrapper, mock_telegram_client, real_files
     ) -> None:
         """
-        When caption is not provided, send_file() passes caption=None.
+        When caption is not provided, send_files() passes caption=None.
         """
-        await mock_client_wrapper.send_file(name="Alice", file_path="/tmp/test.txt")
-        call_kwargs = mock_telegram_client.send_file.call_args
-        assert call_kwargs.kwargs.get("caption") is None
+        await mock_client_wrapper.send_files(name="Alice", file_paths=real_files("test.txt"))
+        assert mock_telegram_client.send_file.call_args.kwargs.get("caption") is None
 
-    async def test_send_file_resolves_entity_by_dialog_id(
-        self, mock_client_wrapper, mock_telegram_client
+    async def test_send_files_resolves_entity_by_dialog_id(
+        self, mock_client_wrapper, mock_telegram_client, real_files
     ) -> None:
         """
-        send_file() resolves entity by dialog_id when provided.
+        send_files() resolves entity by dialog_id when provided.
         """
         mock_telegram_client.get_entity.reset_mock()
         mock_telegram_client.get_entity.side_effect = None
-        await mock_client_wrapper.send_file(dialog_id=123, file_path="/tmp/f.txt")
+        await mock_client_wrapper.send_files(dialog_id=123, file_paths=real_files("f.txt"))
         mock_telegram_client.get_entity.assert_called_once_with(123)
+
+    async def test_send_files_splits_mixed_kinds_into_separate_albums(
+        self, mock_client_wrapper, mock_telegram_client, real_files
+    ) -> None:
+        """
+        Photos and a PDF cannot share one album, so two send_file calls happen —
+        visual first, document second.
+        """
+        photo, doc, photo2 = real_files("1.png", "2.pdf", "3.jpg")
+        mock_telegram_client.send_file.side_effect = [_messages(301, 302), _messages(303)]
+        result = await mock_client_wrapper.send_files(
+            name="Alice", file_paths=[photo, doc, photo2]
+        )
+        assert mock_telegram_client.send_file.call_count == 2
+        first, second = mock_telegram_client.send_file.call_args_list
+        assert first.args[1] == [photo, photo2]
+        assert second.args[1] == [doc]
+        assert result == [301, 302, 303]
+
+    async def test_send_files_captions_only_the_first_album(
+        self, mock_client_wrapper, mock_telegram_client, real_files
+    ) -> None:
+        """
+        With several albums the caption goes on the first one only; repeating it
+        would post the same text twice in the dialog.
+        """
+        paths = real_files("1.png", "2.pdf")
+        mock_telegram_client.send_file.side_effect = [_messages(401), _messages(402)]
+        await mock_client_wrapper.send_files(name="Alice", file_paths=paths, caption="hi")
+        first, second = mock_telegram_client.send_file.call_args_list
+        assert first.kwargs.get("caption") == "hi"
+        assert second.kwargs.get("caption") is None
+
+    async def test_send_files_expands_tilde(
+        self, mock_client_wrapper, mock_telegram_client, real_files, monkeypatch, tmp_path
+    ) -> None:
+        """
+        A ~ path is expanded before sending; Telethon would open it literally.
+        """
+        real_files("home.png")
+        monkeypatch.setenv("HOME", str(tmp_path))
+        await mock_client_wrapper.send_files(name="Alice", file_paths=["~/home.png"])
+        assert mock_telegram_client.send_file.call_args.args[1] == [str(tmp_path / "home.png")]
+
+    async def test_send_files_empty_list_raises(
+        self, mock_client_wrapper, mock_telegram_client
+    ) -> None:
+        """
+        An empty file_paths list is a caller error, not an empty album.
+        """
+        with pytest.raises(ValueError, match="at least one path"):
+            await mock_client_wrapper.send_files(name="Alice", file_paths=[])
+        mock_telegram_client.send_file.assert_not_called()
+
+    async def test_send_files_missing_path_raises_before_sending(
+        self, mock_client_wrapper, mock_telegram_client, real_files
+    ) -> None:
+        """
+        A bad path aborts the whole call: nothing is sent, so no half-delivered
+        album has to be cleaned up. The error names every missing path.
+        """
+        good = real_files("ok.png")[0]
+        with pytest.raises(ValueError, match="not found") as excinfo:
+            await mock_client_wrapper.send_files(
+                name="Alice", file_paths=[good, "/nope/a.png", "/nope/b.png"]
+            )
+        assert "/nope/a.png" in str(excinfo.value)
+        assert "/nope/b.png" in str(excinfo.value)
+        mock_telegram_client.send_file.assert_not_called()
+
+    async def test_send_files_reports_partial_delivery(
+        self, mock_client_wrapper, mock_telegram_client, real_files
+    ) -> None:
+        """
+        When the second album fails, PartialSendError carries the IDs of the
+        first — the caller must not retry the whole list and double-post it.
+        """
+        paths = real_files("1.png", "2.pdf")
+        mock_telegram_client.send_file.side_effect = [
+            _messages(501),
+            RuntimeError("boom"),
+        ]
+        with pytest.raises(PartialSendError) as excinfo:
+            await mock_client_wrapper.send_files(name="Alice", file_paths=paths)
+        assert excinfo.value.message_ids == [501]
+        assert "boom" in str(excinfo.value)
+
+    async def test_send_files_first_album_failure_propagates_unchanged(
+        self, mock_client_wrapper, mock_telegram_client, real_files
+    ) -> None:
+        """
+        Nothing was delivered, so the original error surfaces as-is rather than
+        being dressed up as a partial send.
+        """
+        mock_telegram_client.send_file.side_effect = RuntimeError("boom")
+        with pytest.raises(RuntimeError, match="boom"):
+            await mock_client_wrapper.send_files(
+                name="Alice", file_paths=real_files("1.png")
+            )
 
 
 class TestForwardMessage:
