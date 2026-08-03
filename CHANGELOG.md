@@ -2,6 +2,18 @@
 
 Notable changes per release. Versions before 0.6.0 are recorded only in git history.
 
+## 0.9.1
+
+### Fixed
+
+- **Every fresh install was broken, on all versions.** The `mcp` dependency was declared as
+  `>=1.0.0` with no upper bound. `mcp` 2.0 deleted `mcp.server.fastmcp` and renamed `FastMCP`
+  to `MCPServer` (`mcp.server.mcpserver`), so a new install resolved 2.x and died at import
+  with `ModuleNotFoundError: No module named 'mcp.server.fastmcp'` — the server never
+  started. Existing installs kept working on their locked 1.x, and the test suite runs
+  against `uv.lock`, so nothing here caught it. The dependency is now `mcp>=1.0.0,<2.0.0`.
+  Supporting the 2.x API is a separate job.
+
 ## 0.9.0
 
 ### Added

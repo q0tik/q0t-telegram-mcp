@@ -1,11 +1,14 @@
 [project]
 name = "q0t-telegram-mcp"
-version = "0.9.0"
+version = "0.9.1"
 description = "Telegram MCP server that actually sends messages"
 requires-python = ">=3.12"
 dependencies = [
     "click>=8.0.0",
-    "mcp>=1.0.0",
+    # <2: mcp 2.0 deleted mcp.server.fastmcp and renamed FastMCP to MCPServer
+    # (mcp.server.mcpserver). Without the cap, a fresh install resolves 2.x and
+    # every entry point dies at import on `from mcp.server.fastmcp import …`.
+    "mcp>=1.0.0,<2.0.0",
     # >=1.44.0 (TL layer 227): earlier layers raise TypeNotFoundError on the new
     # Dialog constructor (0xfc89f7f3) that Telegram now returns from getDialogs.
     "telethon>=1.44.0",

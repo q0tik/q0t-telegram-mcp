@@ -366,7 +366,7 @@ invoke the package with no arguments are unaffected.
 supervisor can tell the process is up without opening an MCP session:
 
 ```json
-{"status": "ok", "name": "q0t-telegram-mcp", "version": "0.9.0", "active_sessions": 2}
+{"status": "ok", "name": "q0t-telegram-mcp", "version": "0.9.1", "active_sessions": 2}
 ```
 
 ### ⚠️ Do not expose the port
