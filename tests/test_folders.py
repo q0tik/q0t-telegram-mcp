@@ -328,3 +328,127 @@ class TestErrorTranslation:
 
     def test_lowercase_message_is_not_a_code(self) -> None:
         assert folders.error_code(FakeRpcError("something went wrong")) is None
+
+
+from unittest.mock import AsyncMock, MagicMock  # noqa: E402
+
+from telethon.tl.functions.messages import (  # noqa: E402
+    GetDialogFiltersRequest,
+    UpdateDialogFilterRequest,
+)
+
+
+def set_filters(mock_telegram_client: AsyncMock, filters: list) -> None:
+    """Make the client answer GetDialogFilters with *filters* and record writes.
+
+    Telethon dispatches raw RPCs through TelegramClient.__call__, so one
+    side_effect covers both the read and the writes the tests assert on.
+    """
+    async def _call(request):
+        if isinstance(request, GetDialogFiltersRequest):
+            result = MagicMock()
+            result.filters = filters
+            return result
+        return MagicMock()
+
+    mock_telegram_client.side_effect = _call
+
+
+def sent_updates(mock_telegram_client: AsyncMock) -> list[UpdateDialogFilterRequest]:
+    return [
+        call.args[0] for call in mock_telegram_client.call_args_list
+        if call.args and isinstance(call.args[0], UpdateDialogFilterRequest)
+    ]
+
+
+class TestGetFolders:
+    async def test_lists_folders_with_names(self, mock_client_wrapper, mock_telegram_client) -> None:
+        set_filters(mock_telegram_client, [
+            types.DialogFilterDefault(),
+            make_filter(folder_id=2, title="Work", include=[user_peer(1)]),
+        ])
+        # A real User: get_display_name dispatches on the TL type, so a mock
+        # would silently produce an empty name and prove nothing.
+        mock_telegram_client.get_entity.return_value = types.User(id=1, first_name="Alice")
+
+        result = await mock_client_wrapper.get_folders()
+
+        assert [f.title for f in result] == ["All chats", "Work"]
+        assert result[1].include == [FolderChat(dialog_id=1, name="Alice")]
+
+    async def test_unresolvable_chat_keeps_its_id(self, mock_client_wrapper, mock_telegram_client) -> None:
+        set_filters(mock_telegram_client, [make_filter(include=[user_peer(1)])])
+        mock_telegram_client.get_entity.side_effect = ValueError("no access hash")
+
+        result = await mock_client_wrapper.get_folders()
+
+        assert result[0].include == [FolderChat(dialog_id=1, name=None)]
+
+    async def test_resolve_names_false_skips_lookups(self, mock_client_wrapper, mock_telegram_client) -> None:
+        set_filters(mock_telegram_client, [make_filter(include=[user_peer(1)])])
+        mock_telegram_client.get_entity.reset_mock()
+
+        result = await mock_client_wrapper.get_folders(resolve_names=False)
+
+        assert result[0].include == [FolderChat(dialog_id=1, name=None)]
+        assert mock_telegram_client.get_entity.await_count == 0
+
+    async def test_bare_list_response_is_accepted(self, mock_client_wrapper, mock_telegram_client) -> None:
+        """Older layers returned the filter list directly rather than wrapped."""
+        async def _call(request):
+            return [make_filter(title="Work")]
+
+        mock_telegram_client.side_effect = _call
+        result = await mock_client_wrapper.get_folders(resolve_names=False)
+        assert [f.title for f in result] == ["Work"]
+
+
+class TestFindFilter:
+    async def test_by_id(self, mock_client_wrapper, mock_telegram_client) -> None:
+        set_filters(mock_telegram_client, [make_filter(folder_id=2), make_filter(folder_id=3, title="Fun")])
+        found, _ = await mock_client_wrapper._find_filter(folder_id=3)
+        assert folders.filter_title(found) == "Fun"
+
+    async def test_by_title_is_case_insensitive(self, mock_client_wrapper, mock_telegram_client) -> None:
+        set_filters(mock_telegram_client, [make_filter(title="Work")])
+        found, _ = await mock_client_wrapper._find_filter(title="  work ")
+        assert found.id == 2
+
+    async def test_missing_id_raises(self, mock_client_wrapper, mock_telegram_client) -> None:
+        set_filters(mock_telegram_client, [make_filter(folder_id=2)])
+        with pytest.raises(ValueError, match="Folder not found: id=9"):
+            await mock_client_wrapper._find_filter(folder_id=9)
+
+    async def test_ambiguous_title_names_both_ids(self, mock_client_wrapper, mock_telegram_client) -> None:
+        set_filters(mock_telegram_client, [
+            make_filter(folder_id=2, title="Work"), make_filter(folder_id=5, title="Work"),
+        ])
+        with pytest.raises(ValueError, match="2, 5"):
+            await mock_client_wrapper._find_filter(title="Work")
+
+    async def test_all_chats_is_not_addressable(self, mock_client_wrapper, mock_telegram_client) -> None:
+        """The default view is not a folder; editing it is not a thing."""
+        set_filters(mock_telegram_client, [types.DialogFilterDefault()])
+        with pytest.raises(ValueError, match="Folder not found"):
+            await mock_client_wrapper._find_filter(title="All chats")
+
+    async def test_no_selector_raises(self, mock_client_wrapper, mock_telegram_client) -> None:
+        set_filters(mock_telegram_client, [make_filter()])
+        with pytest.raises(ValueError, match="One of folder_id or title"):
+            await mock_client_wrapper._find_filter()
+
+
+class TestResolvePeers:
+    async def test_unresolvable_chats_are_skipped_not_fatal(self, mock_client_wrapper, mock_telegram_client) -> None:
+        async def _get_entity(ref):
+            if ref == "ghost":
+                raise ValueError("Dialog not found: name=ghost")
+            return MagicMock()
+
+        mock_telegram_client.get_entity.side_effect = _get_entity
+
+        peers, skipped = await mock_client_wrapper._resolve_peers(["@alice", "ghost"])
+
+        assert len(peers) == 1
+        assert skipped[0]["chat"] == "ghost"
+        assert "ghost" in skipped[0]["reason"]

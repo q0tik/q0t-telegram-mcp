@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -8,12 +9,37 @@ import telethon.utils
 from telethon import TelegramClient
 from telethon.errors import UsernameNotOccupiedError
 from telethon.tl import types
-from telethon.tl.functions.messages import SendReactionRequest
+from telethon.tl.functions.messages import (
+    GetDialogFiltersRequest,
+    SendReactionRequest,
+    UpdateDialogFilterRequest,
+)
 from telethon.tl.types import ReactionEmoji
 
 from .config import Config
+from .folders import (
+    ALL_FLAGS,
+    EMPTY_FOLDER_MESSAGE,
+    INCLUSION_FLAGS,
+    KIND_DEFAULT,
+    KIND_SHARED,
+    filter_kind,
+    filter_title,
+    has_any_source,
+    merge_peers,
+    next_free_id,
+    parse_chat_ref,
+    patched_filter,
+    peer_ids,
+    peer_key,
+    shared_folder_message,
+    subtract_peers,
+    title_value,
+    to_folder,
+    would_empty_message,
+)
 from .media import expand_paths, group_for_albums, missing_files
-from .models import Button, Dialog, Message, Reaction, UserInfo
+from .models import Button, Dialog, Folder, Message, Reaction, UserInfo
 
 
 class PartialSendError(RuntimeError):
@@ -638,6 +664,104 @@ class TelegramClientWrapper:
         size = os.path.getsize(path) if path else 0
         return {"path": str(Path(path).resolve()) if path else None,
                 "media": _describe_media(message), "size": size}
+
+    async def get_folders(self, resolve_names: bool = True) -> list[Folder]:
+        """Every chat folder on the account, including the "All chats" entry.
+
+        Names are best-effort: a peer the session cannot resolve comes back with
+        ``name: None`` rather than failing the listing. ``resolve_names=False``
+        skips the lookups entirely, which is the cheap path when the caller only
+        needs IDs.
+        """
+        filters = await self._dialog_filters()
+        self_id = (await self._client.get_me()).id
+        names = await self._folder_names(filters, self_id) if resolve_names else {}
+        return [to_folder(f, names, self_id) for f in filters]
+
+    async def _dialog_filters(self) -> list[Any]:
+        """The raw TL filter list.
+
+        Layer 227 wraps it in ``messages.DialogFilters``; older layers returned
+        the list itself, and a session written by one can still be read by this.
+        """
+        result = await self._client(GetDialogFiltersRequest())
+        filters = getattr(result, "filters", result)
+        return list(filters or [])
+
+    async def _folder_names(self, filters: list[Any], self_id: int) -> dict[int, str | None]:
+        """Display names for every peer mentioned by *filters*, keyed by marked ID."""
+        names: dict[int, str | None] = {}
+        for f in filters:
+            for attr in ("include_peers", "pinned_peers", "exclude_peers"):
+                for peer in getattr(f, attr, None) or []:
+                    key = peer_key(peer, self_id)
+                    if key is None or key in names:
+                        continue
+                    try:
+                        entity = await self._client.get_entity(peer)
+                        names[key] = telethon.utils.get_display_name(entity) or None
+                    except Exception:
+                        # A peer whose access hash the session never learned. The
+                        # ID is still useful; the whole listing is not worth failing.
+                        names[key] = None
+        return names
+
+    async def _find_filter(
+        self,
+        folder_id: int | None = None,
+        title: str | None = None,
+    ) -> tuple[Any, list[Any]]:
+        """Locate one editable folder. Priority: folder_id > title.
+
+        "All chats" is never a match: it is a view, not a folder, and there is
+        nothing on it to edit.
+        """
+        filters = await self._dialog_filters()
+        editable = [f for f in filters if filter_kind(f) != KIND_DEFAULT]
+        if folder_id is not None:
+            for f in editable:
+                if getattr(f, "id", None) == folder_id:
+                    return f, filters
+            raise ValueError(f"Folder not found: id={folder_id}")
+        if title is not None:
+            wanted = title.strip().casefold()
+            matches = [f for f in editable if filter_title(f).strip().casefold() == wanted]
+            if not matches:
+                raise ValueError(f"Folder not found: title={title!r}")
+            if len(matches) > 1:
+                ids = ", ".join(str(f.id) for f in matches)
+                raise ValueError(
+                    f"Several folders are named {title!r} (ids: {ids}); use folder_id"
+                )
+            return matches[0], filters
+        raise ValueError("One of folder_id or title must be provided")
+
+    async def _folder_snapshot(self, folder_id: int) -> Folder:
+        """Re-read one folder after a write, so callers see what Telegram stored."""
+        filters = await self._dialog_filters()
+        self_id = (await self._client.get_me()).id
+        for f in filters:
+            if filter_kind(f) != KIND_DEFAULT and getattr(f, "id", None) == folder_id:
+                return to_folder(f, await self._folder_names([f], self_id), self_id)
+        raise ValueError(f"Folder not found: id={folder_id}")
+
+    async def _resolve_peers(
+        self, chats: Sequence[str]
+    ) -> tuple[list[Any], list[dict[str, str]]]:
+        """Turn chat references into InputPeers, collecting failures rather than raising.
+
+        One bad name in a list of ten should move the other nine, and say which
+        one it dropped.
+        """
+        peers: list[Any] = []
+        skipped: list[dict[str, str]] = []
+        for raw in chats:
+            try:
+                entity = await self._resolve_entity(**parse_chat_ref(raw))
+                peers.append(await self._client.get_input_entity(entity))
+            except Exception as e:
+                skipped.append({"chat": raw, "reason": str(e)})
+        return peers, skipped
 
     async def _resolve_entity(
         self,
