@@ -2,6 +2,26 @@
 
 Notable changes per release. Versions before 0.6.0 are recorded only in git history.
 
+## 0.11.0
+
+### Added
+
+- **Chat folders.** Six new tools: `tg_folders` (read), plus `tg_folder_create`,
+  `tg_folder_update`, `tg_folder_delete`, `tg_folder_add_chats`, and
+  `tg_folder_remove_chats` (write). `TG_READONLY` keeps the listing and drops the rest.
+- Folder contents carry the same marked dialog IDs `tg_dialogs` returns, so the two tools
+  compose without translation.
+- Telegram's folder errors are translated into sentences: `FILTERS_TOO_MUCH` becomes the
+  limit and what to do about it.
+
+### Notes
+
+- `tg_folder_update` never touches membership, and copies the stored filter rather than
+  rebuilding it, so folder settings this server does not model (colour, title animation)
+  survive an edit made from here.
+- Shared folders (joined from an invite link) are listed with `kind: "shared"` and refuse
+  writes. Invite links, folder reordering, and folder tags are not supported.
+
 ## 0.10.0
 
 ### Changed
