@@ -347,8 +347,15 @@ def set_filters(mock_telegram_client: AsyncMock, filters: list) -> None:
     async def _call(request):
         if isinstance(request, GetDialogFiltersRequest):
             result = MagicMock()
-            result.filters = filters
+            result.filters = list(filters)
             return result
+        if isinstance(request, UpdateDialogFilterRequest):
+            # Apply the write the way the server would, so the re-read every
+            # mutating method ends with sees what it just sent.
+            filters[:] = [f for f in filters if getattr(f, "id", None) != request.id]
+            if request.filter is not None:
+                filters.append(request.filter)
+            return MagicMock()
         return MagicMock()
 
     mock_telegram_client.side_effect = _call
@@ -452,3 +459,76 @@ class TestResolvePeers:
         assert len(peers) == 1
         assert skipped[0]["chat"] == "ghost"
         assert "ghost" in skipped[0]["reason"]
+
+
+class TestCreateFolder:
+    async def test_sends_a_filter_with_the_first_free_id(self, mock_client_wrapper, mock_telegram_client) -> None:
+        set_filters(mock_telegram_client, [types.DialogFilterDefault(), make_filter(folder_id=2)])
+
+        await mock_client_wrapper.create_folder(title="Fun", chats=["@alice"])
+
+        sent = sent_updates(mock_telegram_client)[0]
+        assert sent.id == 3
+        assert sent.filter.id == 3
+        assert folders.filter_title(sent.filter) == "Fun"
+        assert len(sent.filter.include_peers) == 1
+
+    async def test_title_is_wrapped_for_the_wire(self, mock_client_wrapper, mock_telegram_client) -> None:
+        """A bare str here fails at serialisation against the real server."""
+        set_filters(mock_telegram_client, [])
+
+        await mock_client_wrapper.create_folder(title="Fun", groups=True)
+
+        sent = sent_updates(mock_telegram_client)[0]
+        assert isinstance(sent.filter.title, types.TextWithEntities)
+
+    async def test_flags_are_carried(self, mock_client_wrapper, mock_telegram_client) -> None:
+        set_filters(mock_telegram_client, [])
+
+        await mock_client_wrapper.create_folder(title="Groups", groups=True, exclude_muted=True)
+
+        sent = sent_updates(mock_telegram_client)[0]
+        assert sent.filter.groups is True
+        assert sent.filter.exclude_muted is True
+        assert sent.filter.bots is None
+
+    async def test_a_folder_with_no_source_is_refused_locally(self, mock_client_wrapper, mock_telegram_client) -> None:
+        """No chats and no inclusion flag: Telegram would answer
+        FILTER_INCLUDE_EMPTY, and a round trip to learn that is wasteful."""
+        set_filters(mock_telegram_client, [])
+
+        with pytest.raises(ValueError, match="at least one chat"):
+            await mock_client_wrapper.create_folder(title="Empty", exclude_muted=True)
+
+        assert sent_updates(mock_telegram_client) == []
+
+    async def test_unresolvable_chats_are_reported(self, mock_client_wrapper, mock_telegram_client) -> None:
+        set_filters(mock_telegram_client, [])
+        mock_telegram_client.get_entity.side_effect = ValueError("Dialog not found: name=ghost")
+
+        with pytest.raises(ValueError, match="at least one chat"):
+            await mock_client_wrapper.create_folder(title="Fun", chats=["ghost"])
+
+
+class TestDeleteFolder:
+    async def test_sends_a_null_filter(self, mock_client_wrapper, mock_telegram_client) -> None:
+        set_filters(mock_telegram_client, [make_filter(folder_id=4, title="Old")])
+
+        deleted_id, deleted_title = await mock_client_wrapper.delete_folder(folder_id=4)
+
+        sent = sent_updates(mock_telegram_client)[0]
+        assert sent.id == 4
+        assert sent.filter is None
+        assert (deleted_id, deleted_title) == (4, "Old")
+
+    async def test_shared_folders_are_refused(self, mock_client_wrapper, mock_telegram_client) -> None:
+        shared = types.DialogFilterChatlist(
+            id=7, title=types.TextWithEntities(text="Team", entities=[]),
+            pinned_peers=[], include_peers=[],
+        )
+        set_filters(mock_telegram_client, [shared])
+
+        with pytest.raises(ValueError, match="shared folder"):
+            await mock_client_wrapper.delete_folder(folder_id=7)
+
+        assert sent_updates(mock_telegram_client) == []

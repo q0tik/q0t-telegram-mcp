@@ -678,6 +678,51 @@ class TelegramClientWrapper:
         names = await self._folder_names(filters, self_id) if resolve_names else {}
         return [to_folder(f, names, self_id) for f in filters]
 
+    async def create_folder(
+        self,
+        title: str,
+        emoji: str | None = None,
+        chats: Sequence[str] = (),
+        **flags: bool | None,
+    ) -> tuple[Folder, list[dict[str, str]]]:
+        """Create a folder and return it, along with any chats that did not resolve."""
+        filters = await self._dialog_filters()
+        folder_id = next_free_id(getattr(f, "id", None) for f in filters)
+        peers, skipped = await self._resolve_peers(chats or ())
+        if not has_any_source(len(peers), flags):
+            raise ValueError(EMPTY_FOLDER_MESSAGE)
+        new = types.DialogFilter(
+            id=folder_id,
+            title=title_value(title),
+            pinned_peers=[],
+            include_peers=peers,
+            exclude_peers=[],
+            emoticon=emoji,
+            # TL flags are set-or-absent; sending False and sending nothing are the
+            # same bit, so None keeps the request minimal.
+            **{name: (True if flags.get(name) else None) for name in ALL_FLAGS},
+        )
+        await self._client(UpdateDialogFilterRequest(id=folder_id, filter=new))
+        return await self._folder_snapshot(folder_id), skipped
+
+    async def delete_folder(
+        self,
+        folder_id: int | None = None,
+        title: str | None = None,
+    ) -> tuple[int, str]:
+        """Delete a folder. The chats in it are untouched — a folder is a view."""
+        f, _ = await self._find_filter(folder_id, title)
+        self._require_editable(f)
+        deleted_title = filter_title(f)
+        await self._client(UpdateDialogFilterRequest(id=f.id, filter=None))
+        return f.id, deleted_title
+
+    @staticmethod
+    def _require_editable(f: Any) -> None:
+        """Refuse writes to a folder joined from an invite link."""
+        if filter_kind(f) == KIND_SHARED:
+            raise ValueError(shared_folder_message(filter_title(f)))
+
     async def _dialog_filters(self) -> list[Any]:
         """The raw TL filter list.
 
