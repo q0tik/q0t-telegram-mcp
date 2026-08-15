@@ -23,6 +23,7 @@ from .folders import (
     INCLUSION_FLAGS,
     KIND_DEFAULT,
     KIND_SHARED,
+    check_title,
     filter_kind,
     filter_title,
     has_any_source,
@@ -686,6 +687,7 @@ class TelegramClientWrapper:
         **flags: bool | None,
     ) -> tuple[Folder, list[dict[str, str]]]:
         """Create a folder and return it, along with any chats that did not resolve."""
+        check_title(title)
         filters = await self._dialog_filters()
         folder_id = next_free_id(getattr(f, "id", None) for f in filters)
         peers, skipped = await self._resolve_peers(chats or ())
@@ -731,6 +733,8 @@ class TelegramClientWrapper:
         filter is read and copied rather than rebuilt, so a field this server does
         not model survives the round trip.
         """
+        if new_title is not None:
+            check_title(new_title)
         f, _ = await self._find_filter(folder_id, title)
         self._require_editable(f)
         changes: dict[str, Any] = {name: flags.get(name) for name in ALL_FLAGS}

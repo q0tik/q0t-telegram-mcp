@@ -130,6 +130,7 @@ extend to a list. Each entry is read as:
 |------|---------|---------|
 | Digits, optionally negative | `-1001234567890` | Numeric `dialog_id` from `tg_dialogs` — most reliable |
 | Leading `@` | `@durov` | Telegram handle |
+| `me` or `self` | `me` | Saved Messages |
 | Anything else | `Team standup` | Display name; may be ambiguous |
 
 Entries that do not resolve are returned in `skipped` with a reason, and the rest are still
@@ -141,6 +142,11 @@ folders share a title the call fails naming both IDs rather than guessing.
 - A folder must have **at least one chat or one of** `contacts`, `non_contacts`, `groups`,
   `broadcasts`, `bots`. The `exclude_*` flags only narrow a folder. Removing the last chat
   from a folder with no such flag is refused — delete the folder instead.
+- **A title is at most 12 characters** — counted in characters, so 12 emoji fit and 13
+  letters do not. Over the limit Telegram answers `MESSAGE_TOO_LONG`, which is why the
+  length is checked here before anything is sent.
+- **Folder icons are a fixed set** (💼 📁 ✈ ⭐ 🎓 💰 🏠 ❤ 👍 🎮 🤖 …). Any other emoji is
+  accepted by the request and silently stored as nothing, so `emoji` comes back `null`.
 - Without Premium: 10 folders, 100 chats each.
 - `All chats` (`id: 0`) is a view, not a folder: it cannot be edited or deleted.
 - Folders joined from an invite link come back with `kind: "shared"`; this server lists them

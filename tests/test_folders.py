@@ -707,3 +707,76 @@ class TestFolderTools:
         result = await server.tg_folders(tool_ctx(mock_client_wrapper))
 
         assert result[0]["error"].startswith("RuntimeError")
+
+
+class TestTitleLength:
+    """Telegram caps a folder title at 12 *characters* — verified live against
+    the real API: 12 emoji pass, 13 ASCII do not, so the unit is code points and
+    not bytes. Over the limit the server answers MESSAGE_TOO_LONG, whose stock
+    text ("Message was too long") makes no sense for a folder."""
+
+    def test_twelve_characters_is_allowed(self) -> None:
+        folders.check_title("x" * folders.FOLDER_TITLE_MAX_LEN)
+
+    def test_thirteen_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="at most 12"):
+            folders.check_title("x" * 13)
+
+    def test_the_limit_counts_characters_not_bytes(self) -> None:
+        folders.check_title("🙂" * 12)
+        with pytest.raises(ValueError, match="at most 12"):
+            folders.check_title("я" * 13)
+
+    def test_the_message_names_the_actual_length(self) -> None:
+        with pytest.raises(ValueError, match="is 20 characters"):
+            folders.check_title("zz-mcp-smoke-renamed")
+
+    def test_message_too_long_is_translated_for_folders(self) -> None:
+        """Backstop for a title the local check let through."""
+        assert "12" in folders.friendly_error(FakeRpcError("MESSAGE_TOO_LONG"))
+
+
+class TestEmojiNormalisation:
+    def test_a_cleared_icon_reads_back_as_none(self) -> None:
+        """Telegram stores a cleared or rejected icon as an empty string; a
+        folder with no icon at all has the field absent. One meaning, one
+        representation."""
+        assert folders.to_folder(make_filter(emoticon="")).emoji is None
+        assert folders.to_folder(make_filter()).emoji is None
+        assert folders.to_folder(make_filter(emoticon="💼")).emoji == "💼"
+
+
+class TestTitleLengthAgainstTheClient:
+    async def test_create_refuses_a_long_title_before_the_network(self, mock_client_wrapper, mock_telegram_client) -> None:
+        set_filters(mock_telegram_client, [])
+
+        with pytest.raises(ValueError, match="at most 12"):
+            await mock_client_wrapper.create_folder(title="x" * 13, groups=True)
+
+        assert sent_updates(mock_telegram_client) == []
+
+    async def test_update_refuses_a_long_title_before_the_network(self, mock_client_wrapper, mock_telegram_client) -> None:
+        set_filters(mock_telegram_client, [make_filter(include=[user_peer(1)])])
+
+        with pytest.raises(ValueError, match="at most 12"):
+            await mock_client_wrapper.update_folder(folder_id=2, new_title="x" * 13)
+
+        assert sent_updates(mock_telegram_client) == []
+
+
+class TestSelfChatRef:
+    """'me' is the alias Telethon itself accepts for Saved Messages, and the
+    word a model reaches for. Without this it lands in the display-name path,
+    matches no dialog, and the chat is silently skipped."""
+
+    def test_me_resolves_to_the_account(self) -> None:
+        assert folders.parse_chat_ref("me") == {"username": "me"}
+
+    def test_self_is_the_same_alias(self) -> None:
+        assert folders.parse_chat_ref("self") == {"username": "me"}
+
+    def test_case_and_padding_do_not_matter(self) -> None:
+        assert folders.parse_chat_ref("  Me ") == {"username": "me"}
+
+    def test_a_name_merely_containing_me_is_untouched(self) -> None:
+        assert folders.parse_chat_ref("Mentors") == {"name": "Mentors"}

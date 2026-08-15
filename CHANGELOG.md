@@ -13,6 +13,17 @@ Notable changes per release. Versions before 0.6.0 are recorded only in git hist
   compose without translation.
 - Telegram's folder errors are translated into sentences: `FILTERS_TOO_MUCH` becomes the
   limit and what to do about it.
+- `me` and `self` are accepted wherever a folder takes a chat, for Saved Messages.
+
+### Limits Telegram enforces, found by running against the real API
+
+- **Folder titles are capped at 12 characters** — characters, not bytes: 12 emoji fit, 13
+  letters do not. The server's answer to a longer one is `MESSAGE_TOO_LONG`, whose stock
+  text ("Message was too long") reads as though a message was sent, so the length is now
+  checked locally before the request and the code is translated as a backstop.
+- **Folder icons are a fixed set.** An emoji outside it is accepted by the request and
+  stored as nothing. A cleared or rejected icon is reported as `null` rather than an empty
+  string, so "no icon" has one representation.
 
 ### Notes
 

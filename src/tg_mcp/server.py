@@ -428,8 +428,8 @@ async def tg_folders(
 
 async def tg_folder_create(
     ctx: Context,
-    title: Annotated[str, Field(description="Folder name as shown in the chat list.")],
-    emoji: Annotated[Optional[str], Field(description="Single emoji shown on the folder tab."), WithJsonSchema({"type": "string", "description": "Single emoji shown on the folder tab."})] = None,
+    title: Annotated[str, Field(description="Folder name as shown in the chat list. At most 12 characters.", max_length=12)],
+    emoji: Annotated[Optional[str], Field(description="Tab icon. Only emoji from Telegram's folder-icon set are kept (💼 📁 ✈ ⭐ 🎓 💰 🏠 ❤ 👍 🎮 🤖 …); anything else is dropped by the server."), WithJsonSchema({"type": "string", "description": "Tab icon. Only emoji from Telegram's folder-icon set are kept (💼 📁 ✈ ⭐ 🎓 💰 🏠 ❤ 👍 🎮 🤖 …); anything else is dropped by the server."})] = None,
     chats: Annotated[Optional[list[str]], Field(description="Chats to put in the folder. Each entry is a numeric dialog_id, an @handle, or a display name."), WithJsonSchema({"type": "array", "items": {"type": "string"}, "description": "Chats to put in the folder. Each entry is a numeric dialog_id, an @handle, or a display name."})] = None,
     contacts: Annotated[bool, Field(description="Automatically include all contacts.")] = False,
     non_contacts: Annotated[bool, Field(description="Automatically include all non-contacts.")] = False,
@@ -458,8 +458,8 @@ async def tg_folder_update(
     ctx: Context,
     folder_id: Annotated[Optional[int], Field(description="Folder ID from tg_folders. Preferred over title."), WithJsonSchema({"type": "integer", "description": "Folder ID from tg_folders. Preferred over title."})] = None,
     title: Annotated[Optional[str], Field(description="Current folder name, when the ID is unknown."), WithJsonSchema({"type": "string", "description": "Current folder name, when the ID is unknown."})] = None,
-    new_title: Annotated[Optional[str], Field(description="Rename the folder to this."), WithJsonSchema({"type": "string", "description": "Rename the folder to this."})] = None,
-    emoji: Annotated[Optional[str], Field(description="New tab emoji. Pass an empty string to clear it."), WithJsonSchema({"type": "string", "description": "New tab emoji. Pass an empty string to clear it."})] = None,
+    new_title: Annotated[Optional[str], Field(description="Rename the folder to this. At most 12 characters."), WithJsonSchema({"type": "string", "maxLength": 12, "description": "Rename the folder to this. At most 12 characters."})] = None,
+    emoji: Annotated[Optional[str], Field(description="New tab icon, from Telegram's folder-icon set (💼 📁 ✈ ⭐ 🎓 💰 🏠 ❤ 👍 🎮 🤖 …); anything else is dropped by the server. Pass an empty string to clear it."), WithJsonSchema({"type": "string", "description": "New tab icon, from Telegram's folder-icon set (💼 📁 ✈ ⭐ 🎓 💰 🏠 ❤ 👍 🎮 🤖 …); anything else is dropped by the server. Pass an empty string to clear it."})] = None,
     contacts: Annotated[Optional[bool], Field(description="Include all contacts. Omit to leave unchanged."), WithJsonSchema({"type": "boolean", "description": "Include all contacts. Omit to leave unchanged."})] = None,
     non_contacts: Annotated[Optional[bool], Field(description="Include all non-contacts. Omit to leave unchanged."), WithJsonSchema({"type": "boolean", "description": "Include all non-contacts. Omit to leave unchanged."})] = None,
     groups: Annotated[Optional[bool], Field(description="Include all groups. Omit to leave unchanged."), WithJsonSchema({"type": "boolean", "description": "Include all groups. Omit to leave unchanged."})] = None,

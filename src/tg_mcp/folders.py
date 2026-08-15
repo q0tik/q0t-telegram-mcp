@@ -25,6 +25,12 @@ from .models import Folder, FolderChat
 FOLDER_ID_MIN = 2
 FOLDER_ID_MAX = 255
 
+#: Longest folder title Telegram accepts, in characters. Verified against the
+#: live API: 12 emoji are accepted and 13 ASCII are not, so the unit is code
+#: points rather than bytes or UTF-16 units. Over the limit the server answers
+#: MESSAGE_TOO_LONG — a code whose stock text is about messages, not folders.
+FOLDER_TITLE_MAX_LEN = 12
+
 #: The built-in "All chats" view. Telegram sends it as a fieldless
 #: DialogFilterDefault; we give it a stable ID and name so a listing is uniform.
 DEFAULT_FOLDER_ID = 0
@@ -81,6 +87,19 @@ def filter_title(f: Any) -> str:
 def title_value(text: str) -> types.TextWithEntities:
     """Wrap a plain title the way layer 227 wants it. Styling is not supported."""
     return types.TextWithEntities(text=text, entities=[])
+
+
+def check_title(title: str) -> None:
+    """Raise when *title* is longer than Telegram will store.
+
+    Checked here rather than left to the server: the answer to an over-long
+    title is ``MESSAGE_TOO_LONG``, which reads as though a message was sent.
+    """
+    if len(title) > FOLDER_TITLE_MAX_LEN:
+        raise ValueError(
+            f'Folder title "{title}" is {len(title)} characters; '
+            f"Telegram allows at most {FOLDER_TITLE_MAX_LEN}."
+        )
 
 
 def peer_key(peer: Any, self_id: int | None = None) -> int | None:
@@ -149,6 +168,11 @@ def parse_chat_ref(raw: str) -> dict[str, Any]:
     ref = (raw or "").strip()
     if not ref:
         raise ValueError("Empty chat reference")
+    # Saved Messages. Telethon resolves "me"/"self" itself; without this the
+    # word falls into the display-name path, matches no dialog, and the chat is
+    # skipped — which is what a live run of this server actually did.
+    if ref.casefold() in ("me", "self"):
+        return {"username": "me"}
     if _NUMERIC_REF.match(ref):
         return {"dialog_id": int(ref)}
     if ref.startswith("@"):
@@ -177,11 +201,15 @@ def to_folder(
 
     # A shared chatlist has none of these attributes; bool(None) is the answer we want.
     flags = {name: bool(getattr(f, name, False)) for name in ALL_FLAGS}
+    # Telegram stores a cleared icon — and one it rejected, since folder icons
+    # are a fixed set — as an empty string, while a folder that never had one
+    # omits the field. Both mean "no icon"; report them the same way.
+    emoticon = getattr(f, "emoticon", None) or None
     return Folder(
         id=getattr(f, "id", DEFAULT_FOLDER_ID),
         title=filter_title(f),
         kind=kind,
-        emoji=getattr(f, "emoticon", None),
+        emoji=emoticon,
         include=chats("include_peers"),
         pinned=chats("pinned_peers"),
         exclude=chats("exclude_peers"),
@@ -270,6 +298,12 @@ _MESSAGES = {
     "FILTER_INCLUDE_EMPTY": EMPTY_FOLDER_MESSAGE,
     "FILTER_TITLE_EMPTY": "Folder title must not be empty.",
     "CHATLISTS_TOO_MUCH": "Telegram shared-folder limit reached.",
+    # Telegram's answer to an over-long folder title. Its stock text talks about
+    # messages; these tools never send one, so the folder reading is the only one.
+    "MESSAGE_TOO_LONG": (
+        f"Folder title is too long — Telegram allows at most "
+        f"{FOLDER_TITLE_MAX_LEN} characters."
+    ),
 }
 
 
