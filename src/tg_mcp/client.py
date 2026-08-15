@@ -717,6 +717,91 @@ class TelegramClientWrapper:
         await self._client(UpdateDialogFilterRequest(id=f.id, filter=None))
         return f.id, deleted_title
 
+    async def update_folder(
+        self,
+        folder_id: int | None = None,
+        title: str | None = None,
+        new_title: str | None = None,
+        emoji: str | None = None,
+        **flags: bool | None,
+    ) -> Folder:
+        """Change a folder's name, emoji, or auto-filters. Membership is untouched.
+
+        Every argument is optional and ``None`` means "leave alone". The current
+        filter is read and copied rather than rebuilt, so a field this server does
+        not model survives the round trip.
+        """
+        f, _ = await self._find_filter(folder_id, title)
+        self._require_editable(f)
+        changes: dict[str, Any] = {name: flags.get(name) for name in ALL_FLAGS}
+        if new_title is not None:
+            changes["title"] = title_value(new_title)
+        if emoji is not None:
+            changes["emoticon"] = emoji
+        updated = patched_filter(f, **changes)
+        if not has_any_source(
+            len(updated.include_peers or []),
+            {name: getattr(updated, name, None) for name in INCLUSION_FLAGS},
+        ):
+            raise ValueError(EMPTY_FOLDER_MESSAGE)
+        await self._client(UpdateDialogFilterRequest(id=f.id, filter=updated))
+        return await self._folder_snapshot(f.id)
+
+    async def add_folder_chats(
+        self,
+        chats: Sequence[str],
+        folder_id: int | None = None,
+        title: str | None = None,
+    ) -> tuple[Folder, list[int], list[dict[str, str]]]:
+        """Add chats to a folder. Returns the folder, what was added, what was skipped."""
+        f, _ = await self._find_filter(folder_id, title)
+        self._require_editable(f)
+        self_id = (await self._client.get_me()).id
+        peers, skipped = await self._resolve_peers(chats)
+        if not peers:
+            raise ValueError(self._nothing_resolved(skipped))
+        before = set(peer_ids(f.include_peers, self_id))
+        merged = merge_peers(f.include_peers, peers, self_id)
+        added = [i for i in peer_ids(merged, self_id) if i not in before]
+        await self._client(
+            UpdateDialogFilterRequest(id=f.id, filter=patched_filter(f, include_peers=merged))
+        )
+        return await self._folder_snapshot(f.id), added, skipped
+
+    async def remove_folder_chats(
+        self,
+        chats: Sequence[str],
+        folder_id: int | None = None,
+        title: str | None = None,
+    ) -> tuple[Folder, list[int], list[dict[str, str]]]:
+        """Remove chats from a folder, from the pinned list as well as the members."""
+        f, _ = await self._find_filter(folder_id, title)
+        self._require_editable(f)
+        self_id = (await self._client.get_me()).id
+        peers, skipped = await self._resolve_peers(chats)
+        if not peers:
+            raise ValueError(self._nothing_resolved(skipped))
+        remove_ids = set(peer_ids(peers, self_id))
+        before = set(peer_ids(f.include_peers, self_id))
+        remaining = subtract_peers(f.include_peers, remove_ids, self_id)
+        if not has_any_source(
+            len(remaining),
+            {name: getattr(f, name, None) for name in INCLUSION_FLAGS},
+        ):
+            raise ValueError(would_empty_message(filter_title(f)))
+        updated = patched_filter(
+            f,
+            include_peers=remaining,
+            pinned_peers=subtract_peers(f.pinned_peers, remove_ids, self_id),
+        )
+        await self._client(UpdateDialogFilterRequest(id=f.id, filter=updated))
+        return await self._folder_snapshot(f.id), sorted(before & remove_ids), skipped
+
+    @staticmethod
+    def _nothing_resolved(skipped: list[dict[str, str]]) -> str:
+        reasons = "; ".join(s["reason"] for s in skipped) or "no chats given"
+        return f"None of the given chats could be resolved: {reasons}"
+
     @staticmethod
     def _require_editable(f: Any) -> None:
         """Refuse writes to a folder joined from an invite link."""

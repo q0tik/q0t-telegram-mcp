@@ -532,3 +532,121 @@ class TestDeleteFolder:
             await mock_client_wrapper.delete_folder(folder_id=7)
 
         assert sent_updates(mock_telegram_client) == []
+
+
+class TestUpdateFolder:
+    async def test_renames_without_touching_membership(self, mock_client_wrapper, mock_telegram_client) -> None:
+        set_filters(mock_telegram_client, [make_filter(include=[user_peer(1)], emoticon="💼")])
+
+        await mock_client_wrapper.update_folder(folder_id=2, new_title="Renamed")
+
+        sent = sent_updates(mock_telegram_client)[0]
+        assert folders.filter_title(sent.filter) == "Renamed"
+        assert folders.peer_ids(sent.filter.include_peers) == [1]
+        assert sent.filter.emoticon == "💼"
+
+    async def test_turning_a_flag_off(self, mock_client_wrapper, mock_telegram_client) -> None:
+        set_filters(mock_telegram_client, [make_filter(include=[user_peer(1)], groups=True)])
+
+        await mock_client_wrapper.update_folder(folder_id=2, groups=False)
+
+        assert sent_updates(mock_telegram_client)[0].filter.groups is False
+
+    async def test_omitted_flags_are_left_alone(self, mock_client_wrapper, mock_telegram_client) -> None:
+        set_filters(mock_telegram_client, [make_filter(include=[user_peer(1)], groups=True, bots=True)])
+
+        await mock_client_wrapper.update_folder(folder_id=2, emoji="📌")
+
+        sent = sent_updates(mock_telegram_client)[0]
+        assert sent.filter.groups is True and sent.filter.bots is True
+
+    async def test_clearing_the_last_source_is_refused(self, mock_client_wrapper, mock_telegram_client) -> None:
+        set_filters(mock_telegram_client, [make_filter(groups=True)])
+
+        with pytest.raises(ValueError, match="at least one chat"):
+            await mock_client_wrapper.update_folder(folder_id=2, groups=False)
+
+        assert sent_updates(mock_telegram_client) == []
+
+    async def test_shared_folders_are_refused(self, mock_client_wrapper, mock_telegram_client) -> None:
+        shared = types.DialogFilterChatlist(
+            id=7, title=types.TextWithEntities(text="Team", entities=[]),
+            pinned_peers=[], include_peers=[user_peer(1)],
+        )
+        set_filters(mock_telegram_client, [shared])
+
+        with pytest.raises(ValueError, match="shared folder"):
+            await mock_client_wrapper.update_folder(folder_id=7, new_title="Mine")
+
+
+class TestAddFolderChats:
+    async def test_appends_and_reports_what_was_added(self, mock_client_wrapper, mock_telegram_client) -> None:
+        set_filters(mock_telegram_client, [make_filter(include=[user_peer(1)])])
+        mock_telegram_client.get_input_entity.return_value = user_peer(2)
+
+        _, added, skipped = await mock_client_wrapper.add_folder_chats(["@bob"], folder_id=2)
+
+        sent = sent_updates(mock_telegram_client)[0]
+        assert folders.peer_ids(sent.filter.include_peers) == [1, 2]
+        assert added == [2] and skipped == []
+
+    async def test_an_existing_chat_is_not_duplicated(self, mock_client_wrapper, mock_telegram_client) -> None:
+        set_filters(mock_telegram_client, [make_filter(include=[user_peer(1)])])
+        mock_telegram_client.get_input_entity.return_value = user_peer(1, access_hash=999)
+
+        _, added, _ = await mock_client_wrapper.add_folder_chats(["@alice"], folder_id=2)
+
+        assert folders.peer_ids(sent_updates(mock_telegram_client)[0].filter.include_peers) == [1]
+        assert added == []
+
+    async def test_nothing_resolvable_is_an_error(self, mock_client_wrapper, mock_telegram_client) -> None:
+        set_filters(mock_telegram_client, [make_filter(include=[user_peer(1)])])
+        mock_telegram_client.get_entity.side_effect = ValueError("Dialog not found: name=ghost")
+
+        with pytest.raises(ValueError, match="None of the given chats"):
+            await mock_client_wrapper.add_folder_chats(["ghost"], folder_id=2)
+
+        assert sent_updates(mock_telegram_client) == []
+
+
+class TestRemoveFolderChats:
+    async def test_drops_from_include_and_pinned(self, mock_client_wrapper, mock_telegram_client) -> None:
+        """A pinned peer that is not in include_peers is an invalid filter."""
+        set_filters(mock_telegram_client, [
+            make_filter(include=[user_peer(1), user_peer(2)], pinned=[user_peer(2)]),
+        ])
+        mock_telegram_client.get_input_entity.return_value = user_peer(2, access_hash=555)
+
+        _, removed, _ = await mock_client_wrapper.remove_folder_chats(["@bob"], folder_id=2)
+
+        sent = sent_updates(mock_telegram_client)[0]
+        assert folders.peer_ids(sent.filter.include_peers) == [1]
+        assert sent.filter.pinned_peers == []
+        assert removed == [2]
+
+    async def test_a_chat_that_was_not_there(self, mock_client_wrapper, mock_telegram_client) -> None:
+        set_filters(mock_telegram_client, [make_filter(include=[user_peer(1)], groups=True)])
+        mock_telegram_client.get_input_entity.return_value = user_peer(8)
+
+        _, removed, _ = await mock_client_wrapper.remove_folder_chats(["@nobody"], folder_id=2)
+
+        assert removed == []
+        assert folders.peer_ids(sent_updates(mock_telegram_client)[0].filter.include_peers) == [1]
+
+    async def test_emptying_the_folder_is_refused(self, mock_client_wrapper, mock_telegram_client) -> None:
+        set_filters(mock_telegram_client, [make_filter(title="Work", include=[user_peer(1)])])
+        mock_telegram_client.get_input_entity.return_value = user_peer(1)
+
+        with pytest.raises(ValueError, match="tg_folder_delete"):
+            await mock_client_wrapper.remove_folder_chats(["@alice"], folder_id=2)
+
+        assert sent_updates(mock_telegram_client) == []
+
+    async def test_an_auto_flag_keeps_the_folder_alive(self, mock_client_wrapper, mock_telegram_client) -> None:
+        """Emptying include_peers is fine when a flag still populates the folder."""
+        set_filters(mock_telegram_client, [make_filter(include=[user_peer(1)], groups=True)])
+        mock_telegram_client.get_input_entity.return_value = user_peer(1)
+
+        await mock_client_wrapper.remove_folder_chats(["@alice"], folder_id=2)
+
+        assert sent_updates(mock_telegram_client)[0].filter.include_peers == []
