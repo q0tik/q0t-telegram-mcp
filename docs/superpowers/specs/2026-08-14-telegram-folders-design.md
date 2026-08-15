@@ -55,6 +55,9 @@ Verified against the pinned Telethon 1.44:
   for the built-in All/Archive views).
 - `include_peers`/`exclude_peers`/`pinned_peers` are `InputPeer`s; `pinned_peers`
   must be a subset of `include_peers`.
+- **`telethon.utils.get_peer_id` raises `TypeError` on `InputPeerSelf`**, which is
+  how Saved Messages appears inside a folder. Every peer helper therefore takes
+  the account's own ID and maps `InputPeerSelf` onto it.
 
 ## Tool Inventory (6 new, 19 total)
 
