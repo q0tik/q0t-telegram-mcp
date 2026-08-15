@@ -180,3 +180,59 @@ class TestParseChatRef:
     def test_empty_reference_raises(self) -> None:
         with pytest.raises(ValueError, match="Empty chat reference"):
             folders.parse_chat_ref("   ")
+
+
+class TestToFolder:
+    def test_maps_every_field(self) -> None:
+        f = make_filter(
+            folder_id=3, title="Work",
+            include=[user_peer(1), channel_peer(777)],
+            pinned=[user_peer(1)],
+            exclude=[user_peer(2)],
+            emoticon="💼", groups=True, exclude_muted=True,
+        )
+        folder = folders.to_folder(f, names={1: "Alice", -1000000000777: "Newsroom"})
+        assert folder.id == 3
+        assert folder.title == "Work"
+        assert folder.kind == folders.KIND_FOLDER
+        assert folder.emoji == "💼"
+        assert folder.include == [
+            FolderChat(dialog_id=1, name="Alice"),
+            FolderChat(dialog_id=-1000000000777, name="Newsroom"),
+        ]
+        assert folder.pinned == [FolderChat(dialog_id=1, name="Alice")]
+        assert folder.exclude == [FolderChat(dialog_id=2, name=None)]
+        assert folder.groups is True
+        assert folder.exclude_muted is True
+        assert folder.bots is False
+
+    def test_unset_flags_are_false_not_none(self) -> None:
+        """Telethon leaves unset TL flags as None; a JSON consumer should see false."""
+        folder = folders.to_folder(make_filter())
+        for flag in folders.ALL_FLAGS:
+            assert getattr(folder, flag) is False
+
+    def test_default_filter_becomes_the_all_chats_entry(self) -> None:
+        folder = folders.to_folder(types.DialogFilterDefault())
+        assert folder.id == 0
+        assert folder.title == "All chats"
+        assert folder.kind == folders.KIND_DEFAULT
+        assert folder.include == []
+
+    def test_shared_chatlist_has_no_exclusions(self) -> None:
+        """DialogFilterChatlist carries no exclude_peers and no auto-flags at all;
+        reading them off it must not explode."""
+        shared = types.DialogFilterChatlist(
+            id=7, title=types.TextWithEntities(text="Team", entities=[]),
+            pinned_peers=[], include_peers=[user_peer(9)],
+        )
+        folder = folders.to_folder(shared)
+        assert folder.kind == folders.KIND_SHARED
+        assert folder.include == [FolderChat(dialog_id=9, name=None)]
+        assert folder.exclude == []
+        assert folder.groups is False
+
+    def test_saved_messages_uses_the_account_id(self) -> None:
+        f = make_filter(include=[types.InputPeerSelf()])
+        folder = folders.to_folder(f, names={999: "Saved Messages"}, self_id=999)
+        assert folder.include == [FolderChat(dialog_id=999, name="Saved Messages")]

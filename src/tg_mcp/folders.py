@@ -14,11 +14,13 @@ The one trap worth stating up front: in TL layer 227 ``DialogFilter.title`` is a
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 import telethon.utils
 from telethon.tl import types
+
+from .models import Folder, FolderChat
 
 FOLDER_ID_MIN = 2
 FOLDER_ID_MAX = 255
@@ -152,3 +154,36 @@ def parse_chat_ref(raw: str) -> dict[str, Any]:
     if ref.startswith("@"):
         return {"username": ref.lstrip("@")}
     return {"name": ref}
+
+
+def to_folder(
+    f: Any,
+    names: Mapping[int, str | None] | None = None,
+    self_id: int | None = None,
+) -> Folder:
+    """Convert a TL dialog filter into the :class:`Folder` a tool returns.
+
+    *names* maps marked ID to display name and may be partial — an unresolved
+    chat comes back with ``name: None`` rather than failing the whole listing.
+    """
+    lookup = names or {}
+    kind = filter_kind(f)
+    if kind == KIND_DEFAULT:
+        return Folder(id=DEFAULT_FOLDER_ID, title=DEFAULT_FOLDER_TITLE, kind=kind)
+
+    def chats(attr: str) -> list[FolderChat]:
+        peers = getattr(f, attr, None)
+        return [FolderChat(dialog_id=i, name=lookup.get(i)) for i in peer_ids(peers, self_id)]
+
+    # A shared chatlist has none of these attributes; bool(None) is the answer we want.
+    flags = {name: bool(getattr(f, name, False)) for name in ALL_FLAGS}
+    return Folder(
+        id=getattr(f, "id", DEFAULT_FOLDER_ID),
+        title=filter_title(f),
+        kind=kind,
+        emoji=getattr(f, "emoticon", None),
+        include=chats("include_peers"),
+        pinned=chats("pinned_peers"),
+        exclude=chats("exclude_peers"),
+        **flags,
+    )
