@@ -27,8 +27,12 @@ ALL_TOOL_NAMES = {
     "tg_me", "tg_dialogs", "tg_dialog", "tg_search", "tg_download",
     "tg_send", "tg_send_file", "tg_forward", "tg_read", "tg_click",
     "tg_react", "tg_delete", "tg_edit",
+    "tg_folders", "tg_folder_create", "tg_folder_update", "tg_folder_delete",
+    "tg_folder_add_chats", "tg_folder_remove_chats",
 }
-READ_ONLY_NAMES = {"tg_me", "tg_dialogs", "tg_dialog", "tg_search", "tg_download"}
+READ_ONLY_NAMES = {
+    "tg_me", "tg_dialogs", "tg_dialog", "tg_search", "tg_download", "tg_folders",
+}
 WRITE_NAMES = ALL_TOOL_NAMES - READ_ONLY_NAMES
 
 

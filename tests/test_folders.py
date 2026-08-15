@@ -650,3 +650,60 @@ class TestRemoveFolderChats:
         await mock_client_wrapper.remove_folder_chats(["@alice"], folder_id=2)
 
         assert sent_updates(mock_telegram_client)[0].filter.include_peers == []
+
+
+import dataclasses  # noqa: E402
+
+from tg_mcp import server  # noqa: E402
+
+
+def tool_ctx(wrapper) -> MagicMock:
+    """The Context shape every tool reaches through for its client."""
+    ctx = MagicMock()
+    ctx.request_context.lifespan_context.client = wrapper
+    return ctx
+
+
+class TestFolderTools:
+    async def test_tg_folders_returns_dicts(self, mock_client_wrapper, mock_telegram_client) -> None:
+        set_filters(mock_telegram_client, [make_filter(title="Work", include=[user_peer(1)])])
+
+        result = await server.tg_folders(tool_ctx(mock_client_wrapper), resolve_names=False)
+
+        assert result[0]["title"] == "Work"
+        assert result[0]["include"] == [{"dialog_id": 1, "name": None}]
+
+    async def test_tg_folder_create_reports_the_new_id(self, mock_client_wrapper, mock_telegram_client) -> None:
+        set_filters(mock_telegram_client, [make_filter(folder_id=2)])
+
+        result = await server.tg_folder_create(tool_ctx(mock_client_wrapper), title="Fun", groups=True)
+
+        assert result["ok"] is True
+        assert result["folder_id"] == 3
+
+    async def test_tg_folder_delete_names_what_it_removed(self, mock_client_wrapper, mock_telegram_client) -> None:
+        set_filters(mock_telegram_client, [make_filter(folder_id=4, title="Old")])
+
+        result = await server.tg_folder_delete(tool_ctx(mock_client_wrapper), folder_id=4)
+
+        assert result == {"ok": True, "deleted_id": 4, "deleted_title": "Old"}
+
+    async def test_a_selectorless_call_is_rejected_before_the_network(self, mock_client_wrapper) -> None:
+        with pytest.raises(ValueError, match="folder_id or title"):
+            await server.tg_folder_delete(tool_ctx(mock_client_wrapper))
+
+    async def test_telegram_errors_become_sentences(self, mock_client_wrapper, mock_telegram_client) -> None:
+        """The raw code FILTERS_TOO_MUCH tells a model nothing actionable."""
+        set_filters(mock_telegram_client, [])
+        mock_telegram_client.side_effect = FakeRpcError("FILTERS_TOO_MUCH")
+
+        result = await server.tg_folder_create(tool_ctx(mock_client_wrapper), title="Fun", groups=True)
+
+        assert "limit" in result["error"]
+
+    async def test_unknown_errors_keep_the_generic_path(self, mock_client_wrapper, mock_telegram_client) -> None:
+        mock_telegram_client.side_effect = RuntimeError("kaboom")
+
+        result = await server.tg_folders(tool_ctx(mock_client_wrapper))
+
+        assert result[0]["error"].startswith("RuntimeError")
