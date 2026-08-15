@@ -13,9 +13,11 @@ The one trap worth stating up front: in TL layer 227 ``DialogFilter.title`` is a
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+import re
+from collections.abc import Iterable, Sequence
 from typing import Any
 
+import telethon.utils
 from telethon.tl import types
 
 FOLDER_ID_MIN = 2
@@ -77,3 +79,76 @@ def filter_title(f: Any) -> str:
 def title_value(text: str) -> types.TextWithEntities:
     """Wrap a plain title the way layer 227 wants it. Styling is not supported."""
     return types.TextWithEntities(text=text, entities=[])
+
+
+def peer_key(peer: Any, self_id: int | None = None) -> int | None:
+    """Marked ID for *peer*, or None when it cannot be expressed as one.
+
+    ``InputPeerSelf`` is the case that matters: Saved Messages is a perfectly
+    ordinary folder member, and ``get_peer_id`` raises on it because the ID is
+    not in the object — it is whoever is logged in.
+    """
+    if isinstance(peer, types.InputPeerSelf):
+        return self_id
+    try:
+        return telethon.utils.get_peer_id(peer)
+    except (TypeError, ValueError):
+        return None
+
+
+def peer_ids(peers: Sequence[Any] | None, self_id: int | None = None) -> list[int]:
+    """Marked IDs of *peers*, order preserved, unkeyable entries dropped."""
+    keys = (peer_key(p, self_id) for p in peers or ())
+    return [k for k in keys if k is not None]
+
+
+def merge_peers(
+    current: Sequence[Any] | None,
+    added: Sequence[Any],
+    self_id: int | None = None,
+) -> list[Any]:
+    """Append *added* to *current*, skipping chats already present.
+
+    Identity is the marked ID: the same chat resolved twice yields two different
+    ``InputPeer`` objects (access hashes differ), and object equality would let a
+    duplicate through.
+    """
+    merged = list(current or ())
+    seen = {k for k in (peer_key(p, self_id) for p in merged) if k is not None}
+    for peer in added:
+        key = peer_key(peer, self_id)
+        if key is not None and key in seen:
+            continue
+        if key is not None:
+            seen.add(key)
+        merged.append(peer)
+    return merged
+
+
+def subtract_peers(
+    current: Sequence[Any] | None,
+    remove_ids: set[int],
+    self_id: int | None = None,
+) -> list[Any]:
+    """*current* without the peers whose marked ID is in *remove_ids*."""
+    return [p for p in current or () if peer_key(p, self_id) not in remove_ids]
+
+
+_NUMERIC_REF = re.compile(r"^-?\d+$")
+
+
+def parse_chat_ref(raw: str) -> dict[str, Any]:
+    """Turn one element of a ``chats`` list into ``_resolve_entity`` kwargs.
+
+    The folder tools take chats as a list of strings, because the three-scalar
+    selector convention (dialog_id / username / name) does not extend to lists.
+    Each element is classified here and resolved by the existing machinery.
+    """
+    ref = (raw or "").strip()
+    if not ref:
+        raise ValueError("Empty chat reference")
+    if _NUMERIC_REF.match(ref):
+        return {"dialog_id": int(ref)}
+    if ref.startswith("@"):
+        return {"username": ref.lstrip("@")}
+    return {"name": ref}

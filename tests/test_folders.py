@@ -93,3 +93,90 @@ class TestFolderDataclass:
 
     def test_folder_chat_name_is_optional(self) -> None:
         assert FolderChat(dialog_id=-100123).name is None
+
+
+def user_peer(user_id: int, access_hash: int = 1) -> types.InputPeerUser:
+    return types.InputPeerUser(user_id=user_id, access_hash=access_hash)
+
+
+def channel_peer(channel_id: int, access_hash: int = 1) -> types.InputPeerChannel:
+    return types.InputPeerChannel(channel_id=channel_id, access_hash=access_hash)
+
+
+class TestPeerKey:
+    def test_user_peer_keeps_its_id(self) -> None:
+        assert folders.peer_key(user_peer(42)) == 42
+
+    def test_channel_peer_is_marked(self) -> None:
+        assert folders.peer_key(channel_peer(777)) == -1000000000777
+
+    def test_chat_peer_is_negated(self) -> None:
+        assert folders.peer_key(types.InputPeerChat(chat_id=55)) == -55
+
+    def test_saved_messages_resolves_to_the_account_id(self) -> None:
+        """Saved Messages sits in folders as InputPeerSelf, which get_peer_id
+        refuses to cast. Without the account ID there is nothing to return."""
+        assert folders.peer_key(types.InputPeerSelf(), self_id=999) == 999
+        assert folders.peer_key(types.InputPeerSelf()) is None
+
+
+class TestPeerIds:
+    def test_order_is_preserved(self) -> None:
+        peers = [user_peer(3), user_peer(1), user_peer(2)]
+        assert folders.peer_ids(peers) == [3, 1, 2]
+
+    def test_unkeyable_peers_are_dropped(self) -> None:
+        assert folders.peer_ids([user_peer(3), types.InputPeerSelf()]) == [3]
+
+    def test_none_is_empty(self) -> None:
+        assert folders.peer_ids(None) == []
+
+
+class TestMergePeers:
+    def test_appends_new_peers(self) -> None:
+        merged = folders.merge_peers([user_peer(1)], [user_peer(2)])
+        assert folders.peer_ids(merged) == [1, 2]
+
+    def test_dedupes_across_distinct_instances(self) -> None:
+        """The same chat arrives with a different access_hash than the one stored
+        in the filter; identity is the marked ID, not object equality."""
+        merged = folders.merge_peers([user_peer(1, access_hash=111)], [user_peer(1, access_hash=222)])
+        assert folders.peer_ids(merged) == [1]
+
+    def test_existing_order_is_untouched(self) -> None:
+        merged = folders.merge_peers([user_peer(5), user_peer(4)], [user_peer(4), user_peer(6)])
+        assert folders.peer_ids(merged) == [5, 4, 6]
+
+
+class TestSubtractPeers:
+    def test_removes_by_marked_id(self) -> None:
+        remaining = folders.subtract_peers([user_peer(1), channel_peer(777)], {-1000000000777})
+        assert folders.peer_ids(remaining) == [1]
+
+    def test_missing_ids_are_a_no_op(self) -> None:
+        remaining = folders.subtract_peers([user_peer(1)], {999})
+        assert folders.peer_ids(remaining) == [1]
+
+
+class TestParseChatRef:
+    def test_positive_id(self) -> None:
+        assert folders.parse_chat_ref("12345") == {"dialog_id": 12345}
+
+    def test_marked_channel_id(self) -> None:
+        assert folders.parse_chat_ref("-1001234567890") == {"dialog_id": -1001234567890}
+
+    def test_handle(self) -> None:
+        assert folders.parse_chat_ref("@durov") == {"username": "durov"}
+
+    def test_display_name(self) -> None:
+        assert folders.parse_chat_ref("Team standup") == {"name": "Team standup"}
+
+    def test_name_with_digits_is_not_an_id(self) -> None:
+        assert folders.parse_chat_ref("Room 101") == {"name": "Room 101"}
+
+    def test_surrounding_whitespace_is_stripped(self) -> None:
+        assert folders.parse_chat_ref("  @durov  ") == {"username": "durov"}
+
+    def test_empty_reference_raises(self) -> None:
+        with pytest.raises(ValueError, match="Empty chat reference"):
+            folders.parse_chat_ref("   ")
