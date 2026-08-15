@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
@@ -73,3 +73,47 @@ class Message:
     chat_name: str | None = None                 # populated only by tg_search results
     reply_to: int | None = None                  # ID of the message this one replies to
     reactions: list[Reaction] | None = None    # reaction buckets; None if nobody reacted
+
+
+@dataclass(frozen=True)
+class FolderChat:
+    """One chat inside a folder.
+
+    ``dialog_id`` is a marked ID — the same value :class:`Dialog` carries, so a
+    folder listing and a dialog listing can be joined without translation.
+    """
+
+    dialog_id: int
+    name: str | None = None   # None when the entity is not resolvable from cache
+
+
+@dataclass(frozen=True)
+class Folder:
+    """A Telegram chat folder (TL: dialog filter).
+
+    Returned by :func:`tg_folders`. ``kind`` is one of:
+
+    ``default``
+        The built-in "All chats" view. Carries ``id: 0`` and nothing else; not editable.
+    ``folder``
+        An ordinary folder owned by this account.
+    ``shared``
+        A folder joined from an invite link (``DialogFilterChatlist``). The TL type
+        has no exclusions and no auto-flags, so those come back empty/False.
+    """
+
+    id: int
+    title: str
+    kind: str
+    emoji: str | None = None
+    include: list[FolderChat] = field(default_factory=list)
+    pinned: list[FolderChat] = field(default_factory=list)
+    exclude: list[FolderChat] = field(default_factory=list)
+    contacts: bool = False
+    non_contacts: bool = False
+    groups: bool = False
+    broadcasts: bool = False
+    bots: bool = False
+    exclude_muted: bool = False
+    exclude_read: bool = False
+    exclude_archived: bool = False
