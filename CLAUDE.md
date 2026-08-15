@@ -33,6 +33,7 @@ q0t-telegram-mcp/
 │       ├── check.py          ← `check` subcommand: session liveness
 │       ├── client.py         ← TelegramClientWrapper (Telethon)
 │       ├── config.py         ← Config dataclass, env + session path
+│       ├── folders.py        ← dialog-filter arithmetic (IDs, peers, patching), pure
 │       ├── media.py          ← album grouping by media kind, path checks
 │       ├── models.py         ← UserInfo, Dialog, Message dataclasses
 │       └── server.py         ← MCPServer instance, tool registrations
@@ -46,6 +47,7 @@ q0t-telegram-mcp/
 │   ├── test_cli.py
 │   ├── test_client.py
 │   ├── test_config.py
+│   ├── test_folders.py
 │   ├── test_http_integration.py
 │   ├── test_media.py
 │   ├── test_models.py

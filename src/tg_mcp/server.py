@@ -15,6 +15,7 @@ from starlette.responses import JSONResponse
 
 from .client import PartialSendError, TelegramClientWrapper
 from .config import Config, TransportConfig
+from .folders import friendly_error
 
 
 @dataclass
@@ -131,6 +132,16 @@ def _error_message(exc: Exception) -> str:
     if len(text) > _MAX_ERROR_CHARS:
         text = f"{text[:_MAX_ERROR_CHARS]}… [truncated, {len(text)} chars total]"
     return f"{type(exc).__name__}: {text}" if text else type(exc).__name__
+
+
+def _folder_error(exc: Exception) -> str:
+    """Folder errors first, generic fallback second.
+
+    Telegram answers a folder mistake with a bare code — FILTERS_TOO_MUCH — that
+    reads as noise. Translating it is the difference between a model retrying
+    blindly and a model deleting a folder first.
+    """
+    return friendly_error(exc) or _error_message(exc)
 
 
 async def tg_me(ctx: Context) -> dict:
@@ -402,9 +413,131 @@ async def tg_download(
         return {"error": _error_message(e)}
 
 
+async def tg_folders(
+    ctx: Context,
+    resolve_names: Annotated[bool, Field(description="Look up display names for the chats in each folder. False returns IDs only and is cheaper.")] = True,
+) -> list[dict]:
+    """List Telegram chat folders. Includes the built-in 'All chats' view as id 0, and folders joined from an invite link with kind 'shared' (those cannot be edited here)."""
+    client: TelegramClientWrapper = ctx.request_context.lifespan_context.client
+    try:
+        folders = await client.get_folders(resolve_names=resolve_names)
+        return [dataclasses.asdict(f) for f in folders]
+    except Exception as e:
+        return [{"error": _folder_error(e)}]
+
+
+async def tg_folder_create(
+    ctx: Context,
+    title: Annotated[str, Field(description="Folder name as shown in the chat list. At most 12 characters.", max_length=12)],
+    emoji: Annotated[Optional[str], Field(description="Tab icon. Only emoji from Telegram's folder-icon set are kept (💼 📁 ✈ ⭐ 🎓 💰 🏠 ❤ 👍 🎮 🤖 …); anything else is dropped by the server."), WithJsonSchema({"type": "string", "description": "Tab icon. Only emoji from Telegram's folder-icon set are kept (💼 📁 ✈ ⭐ 🎓 💰 🏠 ❤ 👍 🎮 🤖 …); anything else is dropped by the server."})] = None,
+    chats: Annotated[Optional[list[str]], Field(description="Chats to put in the folder. Each entry is a numeric dialog_id, an @handle, or a display name."), WithJsonSchema({"type": "array", "items": {"type": "string"}, "description": "Chats to put in the folder. Each entry is a numeric dialog_id, an @handle, or a display name."})] = None,
+    contacts: Annotated[bool, Field(description="Automatically include all contacts.")] = False,
+    non_contacts: Annotated[bool, Field(description="Automatically include all non-contacts.")] = False,
+    groups: Annotated[bool, Field(description="Automatically include all groups.")] = False,
+    broadcasts: Annotated[bool, Field(description="Automatically include all channels.")] = False,
+    bots: Annotated[bool, Field(description="Automatically include all bots.")] = False,
+    exclude_muted: Annotated[bool, Field(description="Hide muted chats from the folder.")] = False,
+    exclude_read: Annotated[bool, Field(description="Hide fully-read chats from the folder.")] = False,
+    exclude_archived: Annotated[bool, Field(description="Hide archived chats from the folder.")] = False,
+) -> dict:
+    """Create a Telegram chat folder. A folder needs at least one chat or one of contacts/non_contacts/groups/broadcasts/bots — the exclude_* flags only narrow it."""
+    client: TelegramClientWrapper = ctx.request_context.lifespan_context.client
+    try:
+        folder, skipped = await client.create_folder(
+            title=title, emoji=emoji, chats=chats or [],
+            contacts=contacts, non_contacts=non_contacts, groups=groups,
+            broadcasts=broadcasts, bots=bots, exclude_muted=exclude_muted,
+            exclude_read=exclude_read, exclude_archived=exclude_archived,
+        )
+        return {"ok": True, "folder_id": folder.id, "folder": dataclasses.asdict(folder), "skipped": skipped}
+    except Exception as e:
+        return {"error": _folder_error(e)}
+
+
+async def tg_folder_update(
+    ctx: Context,
+    folder_id: Annotated[Optional[int], Field(description="Folder ID from tg_folders. Preferred over title."), WithJsonSchema({"type": "integer", "description": "Folder ID from tg_folders. Preferred over title."})] = None,
+    title: Annotated[Optional[str], Field(description="Current folder name, when the ID is unknown."), WithJsonSchema({"type": "string", "description": "Current folder name, when the ID is unknown."})] = None,
+    new_title: Annotated[Optional[str], Field(description="Rename the folder to this. At most 12 characters."), WithJsonSchema({"type": "string", "maxLength": 12, "description": "Rename the folder to this. At most 12 characters."})] = None,
+    emoji: Annotated[Optional[str], Field(description="New tab icon, from Telegram's folder-icon set (💼 📁 ✈ ⭐ 🎓 💰 🏠 ❤ 👍 🎮 🤖 …); anything else is dropped by the server. Pass an empty string to clear it."), WithJsonSchema({"type": "string", "description": "New tab icon, from Telegram's folder-icon set (💼 📁 ✈ ⭐ 🎓 💰 🏠 ❤ 👍 🎮 🤖 …); anything else is dropped by the server. Pass an empty string to clear it."})] = None,
+    contacts: Annotated[Optional[bool], Field(description="Include all contacts. Omit to leave unchanged."), WithJsonSchema({"type": "boolean", "description": "Include all contacts. Omit to leave unchanged."})] = None,
+    non_contacts: Annotated[Optional[bool], Field(description="Include all non-contacts. Omit to leave unchanged."), WithJsonSchema({"type": "boolean", "description": "Include all non-contacts. Omit to leave unchanged."})] = None,
+    groups: Annotated[Optional[bool], Field(description="Include all groups. Omit to leave unchanged."), WithJsonSchema({"type": "boolean", "description": "Include all groups. Omit to leave unchanged."})] = None,
+    broadcasts: Annotated[Optional[bool], Field(description="Include all channels. Omit to leave unchanged."), WithJsonSchema({"type": "boolean", "description": "Include all channels. Omit to leave unchanged."})] = None,
+    bots: Annotated[Optional[bool], Field(description="Include all bots. Omit to leave unchanged."), WithJsonSchema({"type": "boolean", "description": "Include all bots. Omit to leave unchanged."})] = None,
+    exclude_muted: Annotated[Optional[bool], Field(description="Hide muted chats. Omit to leave unchanged."), WithJsonSchema({"type": "boolean", "description": "Hide muted chats. Omit to leave unchanged."})] = None,
+    exclude_read: Annotated[Optional[bool], Field(description="Hide fully-read chats. Omit to leave unchanged."), WithJsonSchema({"type": "boolean", "description": "Hide fully-read chats. Omit to leave unchanged."})] = None,
+    exclude_archived: Annotated[Optional[bool], Field(description="Hide archived chats. Omit to leave unchanged."), WithJsonSchema({"type": "boolean", "description": "Hide archived chats. Omit to leave unchanged."})] = None,
+) -> dict:
+    """Rename a folder or change its auto-filters. Anything omitted is left as it was; folder membership is never touched — use tg_folder_add_chats / tg_folder_remove_chats for that. Supply exactly one of folder_id or title."""
+    if folder_id is None and title is None:
+        raise ValueError("One of folder_id or title must be provided")
+    client: TelegramClientWrapper = ctx.request_context.lifespan_context.client
+    try:
+        folder = await client.update_folder(
+            folder_id=folder_id, title=title, new_title=new_title, emoji=emoji,
+            contacts=contacts, non_contacts=non_contacts, groups=groups,
+            broadcasts=broadcasts, bots=bots, exclude_muted=exclude_muted,
+            exclude_read=exclude_read, exclude_archived=exclude_archived,
+        )
+        return {"ok": True, "folder": dataclasses.asdict(folder)}
+    except Exception as e:
+        return {"error": _folder_error(e)}
+
+
+async def tg_folder_delete(
+    ctx: Context,
+    folder_id: Annotated[Optional[int], Field(description="Folder ID from tg_folders. Preferred over title."), WithJsonSchema({"type": "integer", "description": "Folder ID from tg_folders. Preferred over title."})] = None,
+    title: Annotated[Optional[str], Field(description="Folder name, when the ID is unknown."), WithJsonSchema({"type": "string", "description": "Folder name, when the ID is unknown."})] = None,
+) -> dict:
+    """Delete a Telegram chat folder. The chats themselves are untouched — a folder is only a view. Supply exactly one of folder_id or title."""
+    if folder_id is None and title is None:
+        raise ValueError("One of folder_id or title must be provided")
+    client: TelegramClientWrapper = ctx.request_context.lifespan_context.client
+    try:
+        deleted_id, deleted_title = await client.delete_folder(folder_id=folder_id, title=title)
+        return {"ok": True, "deleted_id": deleted_id, "deleted_title": deleted_title}
+    except Exception as e:
+        return {"error": _folder_error(e)}
+
+
+async def tg_folder_add_chats(
+    ctx: Context,
+    chats: Annotated[list[str], Field(description="Chats to add. Each entry is a numeric dialog_id, an @handle, or a display name.", min_length=1)],
+    folder_id: Annotated[Optional[int], Field(description="Folder ID from tg_folders. Preferred over title."), WithJsonSchema({"type": "integer", "description": "Folder ID from tg_folders. Preferred over title."})] = None,
+    title: Annotated[Optional[str], Field(description="Folder name, when the ID is unknown."), WithJsonSchema({"type": "string", "description": "Folder name, when the ID is unknown."})] = None,
+) -> dict:
+    """Add chats to a folder. Chats already in it are left alone; ones that cannot be resolved are listed in 'skipped' and the rest still go through. Supply exactly one of folder_id or title."""
+    if folder_id is None and title is None:
+        raise ValueError("One of folder_id or title must be provided")
+    client: TelegramClientWrapper = ctx.request_context.lifespan_context.client
+    try:
+        folder, added, skipped = await client.add_folder_chats(chats, folder_id=folder_id, title=title)
+        return {"ok": True, "added": added, "skipped": skipped, "folder": dataclasses.asdict(folder)}
+    except Exception as e:
+        return {"error": _folder_error(e)}
+
+
+async def tg_folder_remove_chats(
+    ctx: Context,
+    chats: Annotated[list[str], Field(description="Chats to remove. Each entry is a numeric dialog_id, an @handle, or a display name.", min_length=1)],
+    folder_id: Annotated[Optional[int], Field(description="Folder ID from tg_folders. Preferred over title."), WithJsonSchema({"type": "integer", "description": "Folder ID from tg_folders. Preferred over title."})] = None,
+    title: Annotated[Optional[str], Field(description="Folder name, when the ID is unknown."), WithJsonSchema({"type": "string", "description": "Folder name, when the ID is unknown."})] = None,
+) -> dict:
+    """Remove chats from a folder, including from its pinned list. Removing the last chat from a folder with no auto-filters is refused — delete the folder instead. Supply exactly one of folder_id or title."""
+    if folder_id is None and title is None:
+        raise ValueError("One of folder_id or title must be provided")
+    client: TelegramClientWrapper = ctx.request_context.lifespan_context.client
+    try:
+        folder, removed, skipped = await client.remove_folder_chats(chats, folder_id=folder_id, title=title)
+        return {"ok": True, "removed": removed, "skipped": skipped, "folder": dataclasses.asdict(folder)}
+    except Exception as e:
+        return {"error": _folder_error(e)}
+
+
 #: Tools that only observe. Nothing here is visible to anyone else on Telegram.
 #: tg_download writes to local disk but changes no account state.
-READ_TOOLS = [tg_me, tg_dialogs, tg_dialog, tg_search, tg_download]
+READ_TOOLS = [tg_me, tg_dialogs, tg_dialog, tg_search, tg_download, tg_folders]
 
 #: Tools that act as the account owner.
 #:
@@ -415,6 +548,8 @@ READ_TOOLS = [tg_me, tg_dialogs, tg_dialog, tg_search, tg_download]
 WRITE_TOOLS = [
     tg_send, tg_send_file, tg_forward, tg_read, tg_click,
     tg_react, tg_delete, tg_edit,
+    tg_folder_create, tg_folder_update, tg_folder_delete,
+    tg_folder_add_chats, tg_folder_remove_chats,
 ]
 
 _READONLY_TRUE = {"1", "true", "yes"}

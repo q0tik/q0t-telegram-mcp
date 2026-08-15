@@ -31,6 +31,12 @@ Tools marked ✎ change state and are omitted entirely under
 | `tg_delete` ✎ | dialog selector; `message_ids` (list[int]); `revoke` (bool, default `true`) | `{"ok": true, "deleted": n}` | Delete one or more messages |
 | `tg_search` | `query` (str); dialog selector (optional — omit for a global search); `limit` (int, default `20`) | List of messages (each with `chat_id`/`chat_name`) | Search messages by text, per-dialog or globally |
 | `tg_download` | dialog selector; `message_id` (int); `dest_dir` (str, optional) | `{path, media, size}` | Download a message's media (photo/voice/document/…) to disk |
+| `tg_folders` | `resolve_names` (bool, default `true`) | List of folders — each has `id`, `title`, `kind`, `emoji`, `include`/`pinned`/`exclude` (lists of `{dialog_id, name}`), and the eight filter flags | List chat folders, including `All chats` as id `0` |
+| `tg_folder_create` ✎ | `title` (str); `emoji` (str, optional); `chats` (list[str], optional); `contacts`/`non_contacts`/`groups`/`broadcasts`/`bots`/`exclude_muted`/`exclude_read`/`exclude_archived` (bool, default `false`) | `{"ok": true, "folder_id": n, "folder": {…}, "skipped": [...]}` | Create a folder ([chat references](#referring-to-chats-in-a-folder)) |
+| `tg_folder_update` ✎ | folder selector — `folder_id` (int) or `title` (str); `new_title` (str, optional); `emoji` (str, optional); the eight flags (bool, optional) | `{"ok": true, "folder": {…}}` | Rename a folder or change its auto-filters; anything omitted is left as it was |
+| `tg_folder_delete` ✎ | folder selector | `{"ok": true, "deleted_id": n, "deleted_title": "…"}` | Delete a folder; the chats in it are untouched |
+| `tg_folder_add_chats` ✎ | `chats` (list[str]); folder selector | `{"ok": true, "added": [...], "skipped": [...], "folder": {…}}` | Add chats to a folder |
+| `tg_folder_remove_chats` ✎ | `chats` (list[str]); folder selector | `{"ok": true, "removed": [...], "skipped": [...], "folder": {…}}` | Remove chats from a folder, pinned list included |
 
 ### Sending several files
 
@@ -113,6 +119,41 @@ failure. Resolution of `name` tries, in order: an exact display-name match; then
 value starts with `@` — a handle lookup against Telegram; then a case-insensitive match against
 the `username` of your dialogs. Display name keeps priority, so nothing that resolved before
 0.7.0 resolves differently now.
+
+### Referring to chats in a folder
+
+`tg_folder_create`, `tg_folder_add_chats`, and `tg_folder_remove_chats` take chats as a
+list of strings rather than the usual three selectors — the selector convention does not
+extend to a list. Each entry is read as:
+
+| Form | Example | Meaning |
+|------|---------|---------|
+| Digits, optionally negative | `-1001234567890` | Numeric `dialog_id` from `tg_dialogs` — most reliable |
+| Leading `@` | `@durov` | Telegram handle |
+| `me` or `self` | `me` | Saved Messages |
+| Anything else | `Team standup` | Display name; may be ambiguous |
+
+Entries that do not resolve are returned in `skipped` with a reason, and the rest are still
+applied. A folder itself is addressed by `folder_id` (from `tg_folders`) or `title`; when two
+folders share a title the call fails naming both IDs rather than guessing.
+
+### Folder rules Telegram enforces
+
+- A folder must have **at least one chat or one of** `contacts`, `non_contacts`, `groups`,
+  `broadcasts`, `bots`. The `exclude_*` flags only narrow a folder. Removing the last chat
+  from a folder with no such flag is refused — delete the folder instead.
+- **A title is at most 12 characters** — counted in characters, so 12 emoji fit and 13
+  letters do not. Over the limit Telegram answers `MESSAGE_TOO_LONG`, which is why the
+  length is checked here before anything is sent.
+- **Folder icons are a fixed set** (💼 📁 ✈ ⭐ 🎓 💰 🏠 ❤ 👍 🎮 🤖 …). Any other emoji is
+  accepted by the request and silently stored as nothing, so `emoji` comes back `null`.
+- Without Premium: 10 folders, 100 chats each.
+- `All chats` (`id: 0`) is a view, not a folder: it cannot be edited or deleted.
+- Folders joined from an invite link come back with `kind: "shared"`; this server lists them
+  but does not edit them.
+- `tg_folder_update` never touches membership, and copies the stored filter rather than
+  rebuilding it, so folder settings this server does not model (tab colour, title animation)
+  survive an edit made from here.
 
 ## Disambiguation: when to use `dialog_id` vs `name`
 

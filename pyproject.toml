@@ -1,6 +1,6 @@
 [project]
 name = "q0t-telegram-mcp"
-version = "0.10.0"
+version = "0.11.0"
 description = "Telegram MCP server that actually sends messages"
 requires-python = ">=3.12"
 # Pinned exactly, not floored. 0.9.0 shipped `mcp>=1.0.0` and mcp 2.0 removed
