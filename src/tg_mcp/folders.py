@@ -187,3 +187,103 @@ def to_folder(
         exclude=chats("exclude_peers"),
         **flags,
     )
+
+
+def has_any_source(include_count: int, flags: Mapping[str, Any]) -> bool:
+    """Would a filter with this much in it actually hold anything?
+
+    Telegram rejects a folder with no explicit chats and no inclusion flag
+    (``FILTER_INCLUDE_EMPTY``). Exclusion flags do not count: they narrow a
+    folder, they cannot populate one.
+    """
+    if include_count > 0:
+        return True
+    return any(bool(flags.get(name)) for name in INCLUSION_FLAGS)
+
+
+#: Fields patched_filter knows how to carry across a replacement. Anything TL
+#: grows later must be added here or an edit will silently drop it.
+_PATCHABLE = ("id", "title", "pinned_peers", "include_peers", "exclude_peers",
+              "emoticon", "color", "title_noanimate", *ALL_FLAGS)
+
+
+def patched_filter(existing: Any, **changes: Any) -> types.DialogFilter:
+    """Copy *existing* with only the non-None entries of *changes* applied.
+
+    There is no partial update in the API: ``UpdateDialogFilterRequest`` replaces
+    the whole filter. Copying the live object — rather than building a fresh one
+    from tool arguments — is what stops an edit made here from wiping settings
+    made in the official app, ``color`` and ``title_noanimate`` above all.
+
+    ``None`` means "leave alone"; ``False`` and ``[]`` are real values and are
+    applied.
+    """
+    fields: dict[str, Any] = {name: getattr(existing, name, None) for name in _PATCHABLE}
+    for name in ("pinned_peers", "include_peers", "exclude_peers"):
+        fields[name] = list(fields[name] or [])
+    for key, value in changes.items():
+        if key not in fields:
+            raise ValueError(f"Unknown DialogFilter field: {key}")
+        if value is not None:
+            fields[key] = value
+    return types.DialogFilter(**fields)
+
+
+EMPTY_FOLDER_MESSAGE = (
+    "A folder needs at least one chat or one of "
+    "contacts/non_contacts/groups/broadcasts/bots."
+)
+
+
+def shared_folder_message(title: str) -> str:
+    """Refusal text for a write aimed at a folder joined from an invite link."""
+    return (
+        f'"{title}" is a shared folder joined from an invite link; this server '
+        "does not edit those. Use an official Telegram client."
+    )
+
+
+def would_empty_message(title: str) -> str:
+    """Refusal text for a removal that would leave a folder with no source."""
+    return (
+        f'Removing these chats would leave "{title}" with no source. '
+        "Delete the folder with tg_folder_delete instead."
+    )
+
+
+#: Telethon generates a class for some folder errors but not all. These are the
+#: ones that exist in 1.44; the rest are read off RPCError.message below.
+_CLASS_CODES = {
+    "FilterIdInvalidError": "FILTER_ID_INVALID",
+    "FilterIncludeEmptyError": "FILTER_INCLUDE_EMPTY",
+    "FilterTitleEmptyError": "FILTER_TITLE_EMPTY",
+}
+
+_ERROR_CODE = re.compile(r"^[A-Z][A-Z0-9_]*$")
+
+_MESSAGES = {
+    "FILTER_ID_INVALID": "Folder not found. Call tg_folders for the current list.",
+    "FILTERS_TOO_MUCH": (
+        "Telegram folder limit reached (10 without Premium, 20 with). "
+        "Delete a folder first."
+    ),
+    "FILTER_INCLUDE_EMPTY": EMPTY_FOLDER_MESSAGE,
+    "FILTER_TITLE_EMPTY": "Folder title must not be empty.",
+    "CHATLISTS_TOO_MUCH": "Telegram shared-folder limit reached.",
+}
+
+
+def error_code(exc: BaseException) -> str | None:
+    """Telegram's raw error code for *exc*, or None if it does not carry one."""
+    name = type(exc).__name__
+    if name in _CLASS_CODES:
+        return _CLASS_CODES[name]
+    message = getattr(exc, "message", None)
+    if isinstance(message, str) and _ERROR_CODE.match(message):
+        return message
+    return None
+
+
+def friendly_error(exc: BaseException) -> str | None:
+    """A sentence a model can act on, or None when we have nothing better to say."""
+    return _MESSAGES.get(error_code(exc) or "")

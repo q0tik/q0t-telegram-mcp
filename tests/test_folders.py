@@ -236,3 +236,95 @@ class TestToFolder:
         f = make_filter(include=[types.InputPeerSelf()])
         folder = folders.to_folder(f, names={999: "Saved Messages"}, self_id=999)
         assert folder.include == [FolderChat(dialog_id=999, name="Saved Messages")]
+
+
+class TestPatchedFilter:
+    def test_untouched_fields_survive(self) -> None:
+        original = make_filter(include=[user_peer(1)], emoticon="💼", groups=True)
+        patched = folders.patched_filter(original, title=folders.title_value("Renamed"))
+        assert folders.filter_title(patched) == "Renamed"
+        assert folders.peer_ids(patched.include_peers) == [1]
+        assert patched.emoticon == "💼"
+        assert patched.groups is True
+
+    def test_none_means_leave_alone(self) -> None:
+        original = make_filter(emoticon="💼")
+        patched = folders.patched_filter(original, emoticon=None)
+        assert patched.emoticon == "💼"
+
+    def test_false_is_applied_not_skipped(self) -> None:
+        """`if value:` instead of `if value is not None:` would make turning a
+        flag off impossible — the classic version of this bug."""
+        original = make_filter(groups=True)
+        patched = folders.patched_filter(original, groups=False)
+        assert patched.groups is False
+
+    def test_empty_list_is_applied(self) -> None:
+        original = make_filter(include=[user_peer(1)], contacts=True)
+        patched = folders.patched_filter(original, include_peers=[])
+        assert patched.include_peers == []
+
+    def test_unmodelled_fields_are_carried_through(self) -> None:
+        """color and title_noanimate are set in the official app and never by us;
+        an edit from here must not silently strip them."""
+        original = make_filter(title_noanimate=True)
+        original.color = 4
+        patched = folders.patched_filter(original, emoticon="📌")
+        assert patched.color == 4
+        assert patched.title_noanimate is True
+
+    def test_the_id_is_preserved(self) -> None:
+        patched = folders.patched_filter(make_filter(folder_id=9), emoticon="📌")
+        assert patched.id == 9
+
+    def test_unknown_field_raises(self) -> None:
+        with pytest.raises(ValueError, match="Unknown DialogFilter field"):
+            folders.patched_filter(make_filter(), nonsense=True)
+
+
+class TestHasAnySource:
+    def test_chats_alone_are_enough(self) -> None:
+        assert folders.has_any_source(1, {}) is True
+
+    def test_an_inclusion_flag_alone_is_enough(self) -> None:
+        assert folders.has_any_source(0, {"groups": True}) is True
+
+    def test_exclusion_flags_are_not_a_source(self) -> None:
+        """exclude_muted narrows a folder; it cannot populate one."""
+        assert folders.has_any_source(0, {"exclude_muted": True}) is False
+
+    def test_nothing_at_all(self) -> None:
+        assert folders.has_any_source(0, {"groups": None, "bots": False}) is False
+
+
+class FakeRpcError(Exception):
+    """Stands in for telethon's RPCError, which carries the raw code in .message."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message
+
+
+class TestErrorTranslation:
+    def test_generated_subclass_is_recognised_by_name(self) -> None:
+        from telethon.errors.rpcerrorlist import FilterIdInvalidError
+
+        exc = FilterIdInvalidError(request=None)
+        assert folders.error_code(exc) == "FILTER_ID_INVALID"
+        assert "tg_folders" in folders.friendly_error(exc)
+
+    def test_unmapped_error_is_read_off_the_message(self) -> None:
+        """Telethon 1.44 has no FiltersTooMuchError class; it arrives as a bare
+        RPCError whose .message is the raw code."""
+        assert folders.error_code(FakeRpcError("FILTERS_TOO_MUCH")) == "FILTERS_TOO_MUCH"
+        assert "limit" in folders.friendly_error(FakeRpcError("FILTERS_TOO_MUCH"))
+
+    def test_include_empty_names_the_flags(self) -> None:
+        assert "contacts" in folders.friendly_error(FakeRpcError("FILTER_INCLUDE_EMPTY"))
+
+    def test_unknown_error_gets_no_sentence(self) -> None:
+        assert folders.friendly_error(FakeRpcError("SOMETHING_ELSE")) is None
+        assert folders.friendly_error(ValueError("boom")) is None
+
+    def test_lowercase_message_is_not_a_code(self) -> None:
+        assert folders.error_code(FakeRpcError("something went wrong")) is None
