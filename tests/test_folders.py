@@ -330,9 +330,9 @@ class TestErrorTranslation:
         assert folders.error_code(FakeRpcError("something went wrong")) is None
 
 
-from unittest.mock import AsyncMock, MagicMock  # noqa: E402
+from unittest.mock import AsyncMock, MagicMock
 
-from telethon.tl.functions.messages import (  # noqa: E402
+from telethon.tl.functions.messages import (
     GetDialogFiltersRequest,
     UpdateDialogFilterRequest,
 )
@@ -652,9 +652,8 @@ class TestRemoveFolderChats:
         assert sent_updates(mock_telegram_client)[0].filter.include_peers == []
 
 
-import dataclasses  # noqa: E402
 
-from tg_mcp import server  # noqa: E402
+from tg_mcp import server
 
 
 def tool_ctx(wrapper) -> MagicMock:
