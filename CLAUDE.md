@@ -52,6 +52,7 @@ q0t-telegram-mcp/
 │   ├── test_media.py
 │   ├── test_models.py
 │   ├── test_readonly.py
+│   ├── test_reconnect.py
 │   ├── test_server.py
 │   ├── test_server_startup.py
 │   ├── test_shared_client.py

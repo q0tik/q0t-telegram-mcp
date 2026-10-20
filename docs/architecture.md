@@ -587,7 +587,8 @@ is visible from outside in three ways, and all three are improvements worth stat
 
 That last one is a deliberate trade and the reason it is documented rather than smoothed over:
 a process that is up but cannot do anything is the worse failure, because monitoring reports
-it healthy. Now `/health` answering at all implies Telegram is connected. The cost is that a
+it healthy. Now `/health` answering at all implies Telegram *was* connected at startup — and
+since 0.11.1 it also reports whether it still is (see `/health` below). The cost is that a
 supervisor restarting a server whose session was revoked gets a crash loop instead of a
 running-but-useless process — which is the correct signal, and `q0t-telegram-mcp check`
 (§8a) is how you find out before starting.
@@ -652,13 +653,47 @@ name.
 
 #### `/health`
 
-Registered with `@mcp.custom_route`, so it answers without an MCP session. Deliberately dull —
-status, package name, version, and the count of active sessions. Nothing configuration- or
-credential-derived, because anything that can reach the port can read it.
+Registered with `@mcp.custom_route`, so it answers without an MCP session. Status, package
+name, version, Telegram connection state, and the count of active sessions. Nothing
+configuration- or credential-derived, because anything that can reach the port can read it.
 
-Since 0.10.0 it carries an implicit guarantee it did not have before: because the lifespan
-runs at process startup under streamable HTTP, a `200` from `/health` means the Telegram
-client is connected. A server with a dead session never gets far enough to answer.
+Since 0.10.0 a server with a dead session never gets far enough to answer, because the
+lifespan runs at process startup under streamable HTTP. That only covers startup. 0.11.1
+added the `telegram` field and a `503` when it is anything but `"connected"`. The bug it
+answers: on a laptop daemon, a lid close took the network away, Telethon's background
+reconnect used up its default five attempts in seconds and stopped, and from then on every
+tool call failed with `Cannot send requests while disconnected` while `/health` kept saying
+`200 ok`. A probe that cannot see the thing it is supposed to watch is worse than no probe.
+
+The state comes from `TelegramClientWrapper.connection_state()`. `TelegramClient.is_connected()`
+is not enough on its own: it returns `MTProtoSender._user_connected`, which records *intent*
+and stays `True` through a whole background reconnect. The link itself is
+`MTProtoSender._transport_connected()`, a private method. It is read defensively, so if it is
+renamed the answer gets coarser instead of `/health` returning a 500.
+
+#### Surviving network loss (0.11.1)
+
+Two layers, both in our code:
+
+- **Telethon retries forever.** The client is built with `connection_retries=-1`,
+  `retry_delay=5`, `auto_reconnect=True`. Checked against the installed Telethon 1.44.0, not
+  its docs: `helpers.retry_range` treats a negative count as infinite, and both
+  `MTProtoSender._connect` (initial connect and each reconnect attempt) and
+  `MTProtoSender._reconnect` loop over it. The delay is the only pacing, because with no
+  network each attempt fails at once with `ENETUNREACH`. The cost is that connecting with no
+  network waits instead of failing, both at startup and for a request issued mid-outage.
+  `auth` and `check` build their own clients and keep the defaults, since they are one-shot
+  commands that should fail fast.
+- **Reconnect before the call.** Telethon can still give up on non-network errors (an auth
+  key the server no longer knows, an unexpected exception in its loop), and then stays down
+  until someone calls `connect()`. `register_tools` wraps every tool in `_reconnect_first`,
+  which calls `TelegramClientWrapper.ensure_connected()` first. That runs under a lock, so
+  concurrent calls reconnect once, and it is bounded by a 30 s timeout. A background reconnect
+  already in progress is left alone. The guard lives at registration so no tool can be added
+  without it, and `functools.wraps` keeps the generated `inputSchema` and the `Context`
+  parameter detection unchanged (a test compares them). If the reconnect fails, the reason is
+  printed to stderr and the tool runs anyway, so the caller gets Telethon's error in that
+  tool's own shape.
 
 The same change reinterprets `active_sessions`. It reports `SharedTelegramClient`'s reference
 count, which is a count of *holds on the client*, not of attached clients — under `http` it is

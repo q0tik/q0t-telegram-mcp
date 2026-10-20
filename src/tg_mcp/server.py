@@ -1,9 +1,10 @@
 import asyncio
 import dataclasses
+import functools
 import importlib.metadata
 import os
 import sys
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Annotated, Optional
@@ -13,7 +14,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import Field, WithJsonSchema
 from starlette.responses import JSONResponse
 
-from .client import PartialSendError, TelegramClientWrapper
+from .client import CONNECTED, PartialSendError, TelegramClientWrapper
 from .config import Config, TransportConfig
 from .folders import friendly_error
 
@@ -78,6 +79,17 @@ class SharedTelegramClient:
                 self._client = client
             self._sessions += 1
             return self._client
+
+    def connection_state(self) -> str | None:
+        """Telegram connection state of the held client, or None if none is held.
+
+        None is not a failure: under sse no client exists until the first MCP
+        session connects, and a process that has nothing to be connected yet is
+        not unhealthy.
+        """
+        if self._client is None:
+            return None
+        return self._client.connection_state()
 
     async def release(self) -> None:
         """Release one session's hold, disconnecting when the last one leaves."""
@@ -572,6 +584,33 @@ def readonly_from_env() -> bool:
     return (os.environ.get("TG_READONLY") or "").strip().lower() in _READONLY_TRUE
 
 
+def _reconnect_first(fn: Callable[..., Awaitable[object]]) -> Callable[..., Awaitable[object]]:
+    """Wrap tool *fn* so a client Telethon gave up on is reconnected before it runs.
+
+    The one place this happens, rather than a line in every tool: each tool
+    already turns exceptions into its own error shape (a dict, or a list with
+    one dict), so the guard stays out of that. If the reconnect itself fails,
+    the reason goes to stderr and the tool runs anyway — it then fails with
+    Telethon's error in the shape its caller expects, exactly as before.
+
+    ``functools.wraps`` keeps the name, docstring, and annotations, and
+    ``inspect.signature`` follows ``__wrapped__``, so MCPServer derives the same
+    input schema and still finds the ``Context`` parameter.
+    """
+
+    @functools.wraps(fn)
+    async def guarded(*args: object, **kwargs: object) -> object:
+        ctx = kwargs.get("ctx", args[0] if args else None)
+        try:
+            client = ctx.request_context.lifespan_context.client  # type: ignore[union-attr]
+            await client.ensure_connected()
+        except Exception as e:
+            print(f"Reconnect before {fn.__name__} failed: {_error_message(e)}", file=sys.stderr)
+        return await fn(*args, **kwargs)
+
+    return guarded
+
+
 def register_tools(server: MCPServer, *, readonly: bool) -> None:
     """Register the tool set on *server*.
 
@@ -589,7 +628,7 @@ def register_tools(server: MCPServer, *, readonly: bool) -> None:
     tools = READ_TOOLS if readonly else READ_TOOLS + WRITE_TOOLS
     for fn in tools:
         if fn.__name__ not in registered:
-            server.add_tool(fn)
+            server.add_tool(_reconnect_first(fn))
 
 
 def _package_version() -> str:
@@ -602,20 +641,30 @@ def _package_version() -> str:
 
 @mcp.custom_route("/health", methods=["GET"])
 async def health(request):
-    """Liveness probe: is the process up, without opening an MCP session.
+    """Health probe: is the process up *and* can it reach Telegram.
 
-    Deliberately dull. It answers before any session exists and is reachable by
-    anything that can reach the port, so it reports only what is already public
-    from the outside: that the process is listening, and which version it is.
-    Never configuration, credentials, or who is logged in.
+    Answers before any session exists and is reachable by anything that can
+    reach the port, so it reports only what is already public from the outside:
+    that the process is listening, which version it is, and whether its
+    Telegram link is up. Never configuration, credentials, or who is logged in.
+
+    ``503`` whenever the held client is not connected — reconnecting after a
+    network loss, or given up on. Before 0.11.1 this always said ``ok``, and a
+    daemon whose client had died in the night reported healthy while every tool
+    call failed. ``telegram`` is ``null`` when no client is held yet (sse with
+    no session), which is not a failure.
     """
+    state = shared_client.connection_state()
+    healthy = state in (None, CONNECTED)
     return JSONResponse(
         {
-            "status": "ok",
+            "status": "ok" if healthy else "degraded",
             "name": "q0t-telegram-mcp",
             "version": _package_version(),
+            "telegram": state,
             "active_sessions": shared_client.active_sessions,
-        }
+        },
+        status_code=200 if healthy else 503,
     )
 
 

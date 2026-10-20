@@ -2,6 +2,33 @@
 
 Notable changes per release. Versions before 0.6.0 are recorded only in git history.
 
+## 0.11.1
+
+### Fixed
+
+- **The HTTP daemon no longer dies when the machine sleeps.** Telethon's background
+  reconnect gave up after its default five attempts, which a closed laptop lid used up in
+  seconds (`Network is unreachable`). After wake every tool call answered `ConnectionError:
+  Cannot send requests while disconnected` until the process was restarted by hand. The
+  client now retries forever (`connection_retries=-1`, every 5 s), so it reconnects on its
+  own after a network loss of any length.
+- **A tool call that finds the client disconnected reconnects first** (bounded at 30 s)
+  instead of failing straight away. This is done in one place, at tool registration, so it
+  covers every tool and leaves tool schemas and return shapes unchanged.
+- **`/health` reports the Telegram connection.** A new `telegram` field is `"connected"`,
+  `"reconnecting"`, `"disconnected"`, or `null` (no client held yet, sse only). Anything but
+  connected answers **`503`** with `"status": "degraded"`. Before this it said `200 ok` while
+  every tool call failed.
+
+### Notes
+
+- With unlimited retries, connecting with no network **waits for the network** instead of
+  failing after a few seconds. That applies at startup and to tool calls made mid-outage.
+  `auth` and `check` keep Telethon's defaults and still fail fast.
+- A supervisor that restarts on a non-200 `/health` will now also restart during a temporary
+  `reconnecting`. If you only want to act on a dead client, key off `"telegram":
+  "disconnected"`.
+
 ## 0.11.0
 
 ### Added
