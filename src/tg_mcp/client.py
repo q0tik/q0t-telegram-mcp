@@ -9,13 +9,15 @@ from typing import Any
 
 import telethon.utils
 from telethon import TelegramClient
-from telethon.errors import UsernameNotOccupiedError
+from telethon.errors import AuthKeyError, UnauthorizedError, UsernameNotOccupiedError
+from telethon.errors.common import AuthKeyNotFound
 from telethon.tl import types
 from telethon.tl.functions.messages import (
     GetDialogFiltersRequest,
     SendReactionRequest,
     UpdateDialogFilterRequest,
 )
+from telethon.tl.functions.updates import GetStateRequest
 from telethon.tl.types import ReactionEmoji
 
 from .config import Config
@@ -43,6 +45,16 @@ from .folders import (
 )
 from .media import expand_paths, group_for_albums, missing_files
 from .models import Button, Dialog, Folder, Message, Reaction, UserInfo
+
+
+class AuthLostError(RuntimeError):
+    """The session is no longer authorized and reconnecting cannot fix it.
+
+    Raised by :meth:`TelegramClientWrapper.ensure_connected` once Telegram has
+    answered with one of :data:`AUTH_LOSS_ERRORS` (the session was terminated
+    from another device, the auth key was revoked or duplicated). Only a fresh
+    ``q0t-telegram-mcp auth`` brings it back.
+    """
 
 
 class PartialSendError(RuntimeError):
@@ -189,6 +201,18 @@ RECONNECT_TIMEOUT_SECONDS = 30
 CONNECTED = "connected"
 RECONNECTING = "reconnecting"
 DISCONNECTED = "disconnected"
+UNAUTHORIZED = "unauthorized"
+
+#: Errors that mean the *session* is gone, not the network: SESSION_REVOKED and
+#: AUTH_KEY_UNREGISTERED are UnauthorizedError (401), AUTH_KEY_DUPLICATED is an
+#: AuthKeyError (406), and AuthKeyNotFound is the transport-level 404 for a key
+#: the server has forgotten. Reconnecting succeeds after all of them — MTProto
+#: does not care — and every request after it fails again.
+AUTH_LOSS_ERRORS: tuple[type[BaseException], ...] = (
+    UnauthorizedError,
+    AuthKeyError,
+    AuthKeyNotFound,
+)
 
 
 class TelegramClientWrapper:
@@ -204,6 +228,10 @@ class TelegramClientWrapper:
         # Several tool calls can find the client dead at the same instant; only
         # one of them should reconnect, the rest wait for it.
         self._reconnect_lock = asyncio.Lock()
+        # Sticky: once Telegram says the session is gone it stays gone for the
+        # life of this process. Telethon's own record of it (_updates_error) is
+        # reset by the next connect(), so it is copied here before that.
+        self._auth_error: BaseException | None = None
 
     async def connect(self) -> None:
         """Open a connection to Telegram and verify the session is authorized.
@@ -256,6 +284,8 @@ class TelegramClientWrapper:
         Telethon method, read defensively so a future rename degrades to the
         coarser answer rather than an exception in ``/health``.
         """
+        if self.auth_error() is not None:
+            return UNAUTHORIZED
         client = self._client
         if client is None or not client.is_connected():
             return DISCONNECTED
@@ -263,6 +293,35 @@ class TelegramClientWrapper:
         if callable(transport_up) and not transport_up():
             return RECONNECTING
         return CONNECTED
+
+    def auth_error(self) -> BaseException | None:
+        """The error that showed this session is no longer authorized, or None.
+
+        Two sources. Ours: a check after reconnecting. Telethon's: its update
+        loop polls ``getDifference`` and, on a 401/406 from it, records the
+        error in ``_updates_error`` and **calls disconnect() itself** — the
+        locally initiated "Disconnecting from …" with nothing reconnecting
+        afterwards. That private attribute is read defensively; a rename only
+        delays detection until the next reconnect check.
+        """
+        if self._auth_error is None and self._client is not None:
+            err = getattr(self._client, "_updates_error", None)
+            if isinstance(err, AUTH_LOSS_ERRORS):
+                self._auth_error = err
+        return self._auth_error
+
+    async def _verify_authorized(self) -> None:
+        """Make one request that needs a logged-in account.
+
+        ``is_user_authorized()`` cannot be used for this: Telethon caches its
+        first answer for the life of the client, so it keeps saying True after
+        the session has been revoked.
+        """
+        try:
+            await self._client(GetStateRequest())
+        except AUTH_LOSS_ERRORS as e:
+            self._auth_error = e
+            raise AuthLostError(f"Telegram session is no longer authorized: {type(e).__name__}") from e
 
     async def ensure_connected(self) -> bool:
         """Reconnect if Telethon has given up on the connection.
@@ -277,11 +336,20 @@ class TelegramClientWrapper:
         Returns:
             True if a reconnect was performed, False if none was needed.
 
+        A disconnect caused by losing the session is not reconnected: Telethon
+        would connect fine and every request would fail again. That raises
+        :class:`AuthLostError` instead, and so does a reconnect after which the
+        account turns out to be logged out.
+
         Raises:
+            AuthLostError: If the session is no longer authorized.
             ConnectionError: If the reconnect does not finish within
                 :data:`RECONNECT_TIMEOUT_SECONDS`.
         """
         client = self._client
+        lost = self.auth_error()
+        if lost is not None:
+            raise AuthLostError(f"Telegram session is no longer authorized: {type(lost).__name__}")
         if client is None or client.is_connected():
             return False
         async with self._reconnect_lock:
@@ -290,6 +358,7 @@ class TelegramClientWrapper:
             print("Telegram client is disconnected; reconnecting before the call", file=sys.stderr)
             try:
                 await asyncio.wait_for(client.connect(), RECONNECT_TIMEOUT_SECONDS)
+                await asyncio.wait_for(self._verify_authorized(), RECONNECT_TIMEOUT_SECONDS)
             except TimeoutError:
                 # A cancelled connect can leave a half-open connection behind;
                 # close it so the next attempt starts clean.

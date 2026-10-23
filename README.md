@@ -414,11 +414,21 @@ without opening an MCP session:
 |------------|------|---------|
 | `"connected"` | `200` | Requests reach Telegram. |
 | `"reconnecting"` | `503` | The link dropped (network loss, sleep) and Telethon is retrying in the background. |
-| `"disconnected"` | `503` | The client is down and not retrying; the next tool call reconnects it. |
+| `"disconnected"` | `503` | The client is down and not retrying; the watchdog (or the next tool call) reconnects it. |
+| `"unauthorized"` | `503` | The session itself is gone (revoked, logged out, key duplicated). The process exits with status `78` within a minute; run `auth` again. |
 | `null` | `200` | No client held yet (only under `sse`, before the first session). |
 
-`status` is `"ok"` with a `200` and `"degraded"` with a `503`, so a supervisor can key off
-either. Before 0.11.1 it always said `ok`, even with a dead client.
+`status` is `"ok"` with a `200`, `"unauthorized"` with `"telegram": "unauthorized"`, and
+`"degraded"` with any other `503`, so a supervisor can key off either field. Before 0.11.1 it
+always said `ok`, even with a dead client.
+
+**A client that cannot be used ends the process.** A watchdog checks the held client every
+60 s. If Telethon has given up on it, the watchdog reconnects it. If Telegram says the
+session is gone, the process exits with status **`78`**. A restart then stops at startup with
+`Not authorized` until someone runs `auth` again. If the client is down and five reconnects
+in a row fail, the process exits with status **`75`**, and a restart is the expected fix. A
+plain network outage does not count toward that limit, because Telethon keeps retrying it in
+the background. Run the server under something that restarts it on a non-zero exit.
 
 Since 0.10.0 the Telegram connection is opened when the process starts, not when the first
 MCP session arrives, and is held until the server stops. A server with no authorized session

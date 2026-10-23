@@ -65,6 +65,9 @@ def _telethon(*, user_connected: bool, transport_up: bool = True) -> MagicMock:
     tc._sender._transport_connected = MagicMock(return_value=transport_up)
     tc.connect = AsyncMock()
     tc.disconnect = AsyncMock()
+    # client(request): the post-reconnect authorization check (0.11.2).
+    tc.side_effect = AsyncMock(return_value=None)
+    tc._updates_error = None
     return tc
 
 

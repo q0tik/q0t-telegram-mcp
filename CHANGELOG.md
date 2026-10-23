@@ -19,6 +19,18 @@ Notable changes per release. Versions before 0.6.0 are recorded only in git hist
   `"reconnecting"`, `"disconnected"`, or `null` (no client held yet, sse only). Anything but
   connected answers **`503`** with `"status": "degraded"`. Before this it said `200 ok` while
   every tool call failed.
+- **A revoked session no longer leaves a zombie process.** Telethon's update loop calls
+  `disconnect()` itself when `getDifference` answers `SESSION_REVOKED` /
+  `AUTH_KEY_UNREGISTERED` / `AUTH_KEY_DUPLICATED`, and nothing ever reconnected. In production
+  that left a process alive for four weeks, answering `200 ok` while every tool call failed.
+  The wrapper now treats those errors as auth loss. `/health` reports `"telegram":
+  "unauthorized"` (`503`, `"status": "unauthorized"`), and nothing reconnects into the dead
+  session. After any reconnect, authorization is checked with a real request, because
+  Telethon's `is_user_authorized()` caches its first answer.
+- **A watchdog keeps the held client usable or ends the process.** It runs every 60 s and
+  reconnects a client Telethon gave up on, even when no tool call arrives. On auth loss it
+  exits with status `78`. After five failed reconnects in a row it exits with status `75`,
+  so the supervisor restarts it.
 
 ### Notes
 

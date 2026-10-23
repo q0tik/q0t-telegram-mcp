@@ -695,6 +695,24 @@ Two layers, both in our code:
   printed to stderr and the tool runs anyway, so the caller gets Telethon's error in that
   tool's own shape.
 
+- **Auth loss and the watchdog.** Telethon's `_update_loop` polls `getDifference`. When that
+  answers `UnauthorizedError` or `AuthKeyError` (`SESSION_REVOKED`, `AUTH_KEY_UNREGISTERED`,
+  `AUTH_KEY_DUPLICATED`), Telethon stores the error in `_updates_error` and **calls
+  `disconnect()` itself**. That produces a locally initiated `Disconnecting from …`, and
+  nothing in Telethon reconnects afterwards. This is the four-week production zombie from
+  0.11.0. `TelegramClientWrapper.auth_error()` copies that record into a field of its own
+  that never resets, because Telethon clears `_updates_error` on its next connect. It also
+  records an `AUTH_LOSS_ERRORS` failure from the authorization check that `ensure_connected()`
+  now runs after every reconnect. That check sends `updates.GetState` directly, because
+  `is_user_authorized()` caches its first answer for the life of the client. Once auth is
+  lost, `connection_state()` returns `"unauthorized"` and `ensure_connected()` raises
+  `AuthLostError` without reconnecting. A watchdog task, `SharedTelegramClient._watch`, is
+  started with the process-wide client and cancelled on its last release. Every 60 s it calls
+  `ensure_connected()`. On `AuthLostError` it exits `78`. After five consecutive failures of
+  any other kind it exits `75`. It uses `os._exit`, because `SystemExit` raised inside a task
+  would only end the task, and a graceful uvicorn shutdown would exit with status 0.
+  Instances built without `watchdog_interval` run no watchdog. Tests build those.
+
 The same change reinterprets `active_sessions`. It reports `SharedTelegramClient`'s reference
 count, which is a count of *holds on the client*, not of attached clients — under `http` it is
 `1` from startup to shutdown regardless of how many clients are connected, while under `sse`
