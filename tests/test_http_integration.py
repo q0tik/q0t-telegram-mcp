@@ -66,7 +66,7 @@ async def _serving(app):
 
 
 @asynccontextmanager
-async def _http_server(readonly: bool = False):
+async def _http_server(readonly: bool = False, connection_state: str = "connected"):
     """A fresh MCPServer over HTTP with Telethon mocked.
 
     Fresh per test because a session manager may only be run once per instance.
@@ -79,6 +79,8 @@ async def _http_server(readonly: bool = False):
         wrapper = MagicMock()
         wrapper.connect = AsyncMock()
         wrapper.disconnect = AsyncMock()
+        wrapper.ensure_connected = AsyncMock(return_value=False)
+        wrapper.connection_state = MagicMock(return_value=connection_state)
         wrapper.get_me = AsyncMock(
             return_value=UserInfo(id=777, first_name="Alice", last_name=None,
                                   username="alice", phone="15550001234")
@@ -100,7 +102,7 @@ async def _http_server(readonly: bool = False):
 
 
 @asynccontextmanager
-async def _sse_server():
+async def _sse_server(connection_state: str = "connected"):
     """The same server, served over sse instead of streamable HTTP.
 
     Worth its own fixture because sse is the transport where the lifespan is
@@ -115,6 +117,8 @@ async def _sse_server():
         wrapper = MagicMock()
         wrapper.connect = AsyncMock()
         wrapper.disconnect = AsyncMock()
+        wrapper.ensure_connected = AsyncMock(return_value=False)
+        wrapper.connection_state = MagicMock(return_value=connection_state)
         wrapper.get_me = AsyncMock(
             return_value=UserInfo(id=777, first_name="Alice", last_name=None,
                                   username="alice", phone="15550001234")
@@ -298,4 +302,37 @@ class TestHealthOverHttp:
         assert response.status_code == 200
         assert response.json()["status"] == "ok"
         assert response.json()["name"] == "q0t-telegram-mcp"
+        assert response.json()["telegram"] == "connected"
         assert after == before, "/health must not open a Telegram connection"
+
+    @pytest.mark.parametrize("state", ["reconnecting", "disconnected"])
+    async def test_health_is_503_when_telegram_is_down(self, state: str) -> None:
+        """The bug 0.11.1 fixes: after a laptop slept through Telethon's retries,
+        /health kept answering 200 "ok" while every tool call failed. A
+        supervisor reading it could not tell. Now it can."""
+        import httpx2
+
+        async with _http_server(connection_state=state) as (base, _created, _shared):
+            async with httpx2.AsyncClient() as http:
+                response = await http.get(f"{base}/health")
+
+        assert response.status_code == 503
+        assert response.json()["status"] == "degraded"
+        assert response.json()["telegram"] == state
+
+
+class TestReconnectBeforeCallOverHttp:
+    async def test_tool_call_over_http_reconnects_first(self) -> None:
+        """The guard is applied where tools are registered, so this checks it
+        survives MCPServer's own introspection: the wrapped tool still gets its
+        Context, and the reconnect happens before the Telegram call."""
+        async with _http_server() as (base, created, _shared):
+            order: list[str] = []
+            created[0].ensure_connected.side_effect = lambda: order.append("reconnect")
+            created[0].get_me.side_effect = lambda: (order.append("get_me"), UserInfo(
+                id=777, first_name="Alice", last_name=None, username="alice", phone=None))[1]
+            async with _mcp_client(base) as session:
+                result = await session.call_tool("tg_me", {})
+
+        assert "alice" in str(result.content)
+        assert order == ["reconnect", "get_me"]

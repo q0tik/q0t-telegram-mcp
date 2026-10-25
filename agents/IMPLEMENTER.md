@@ -80,3 +80,8 @@ You do not invent architecture — if the design is unclear or missing, you stop
 - After changing `_resolve_entity(name: str)` to `_resolve_entity(dialog_id, username, name)`, all three public methods (`get_messages`, `send_message`, `mark_read`) must be updated to pass keyword arguments through.
 - Similarly, the server tools must pass all three selector kwargs to the client methods.
 - Tests that assert on mock call arguments (e.g. `assert_called_once_with(name="Alice")`) must be updated to match the new call signature.
+
+### Telethon connection state and retries (0.11.1)
+- `connection_retries` defaults to 5 and governs the *background auto-reconnect* too: when it runs out, Telethon marks the client disconnected for good and every request raises `Cannot send requests while disconnected`. The server's client uses `-1` (infinite, per `telethon.helpers.retry_range`). Check the installed source under `.venv/lib/python*/site-packages/telethon/network/mtprotosender.py` before relying on retry semantics.
+- `TelegramClient.is_connected()` is user intent (`_user_connected`), True during a reconnect. The real link is `client._sender._transport_connected()` (private). `connection_state()` combines both.
+- Cross-cutting tool behaviour goes in `_reconnect_first`-style wrappers applied in `register_tools`, not in each tool. `functools.wraps` is enough for MCPServer to derive the same schema and find `ctx`. HTTP-integration fakes are plain `MagicMock`s, so give them every method the wrapper now calls (`ensure_connected`, `connection_state`), or `/health` fails with a JSON-serialisation 500.

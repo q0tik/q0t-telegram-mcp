@@ -1,9 +1,10 @@
 import asyncio
 import dataclasses
+import functools
 import importlib.metadata
 import os
 import sys
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Annotated, Optional
@@ -13,7 +14,13 @@ from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import Field, WithJsonSchema
 from starlette.responses import JSONResponse
 
-from .client import PartialSendError, TelegramClientWrapper
+from .client import (
+    CONNECTED,
+    UNAUTHORIZED,
+    AuthLostError,
+    PartialSendError,
+    TelegramClientWrapper,
+)
 from .config import Config, TransportConfig
 from .folders import friendly_error
 
@@ -23,6 +30,42 @@ class AppContext:
     """Holds shared resources available to every MCP tool during a server session."""
 
     client: TelegramClientWrapper
+
+
+#: Seconds between watchdog checks of the held client. Telethon's own update
+#: loop only notices a revoked session on its next getDifference (up to ~15 min
+#: with no traffic), so this does not need to be tight — it bounds how long a
+#: dead client sits there *after* Telethon has given up on it.
+WATCHDOG_INTERVAL_SECONDS = 60
+
+#: Consecutive watchdog reconnects that may fail before the process gives up.
+#: A network outage does not count: Telethon retries that forever in the
+#: background and the watchdog leaves it alone. This is for a client that is
+#: down *and* cannot be brought back, which a fresh process may still fix.
+MAX_FAILED_RECOVERIES = 5
+
+#: Exit status when the session is no longer authorized. sysexits EX_CONFIG:
+#: restarting alone will not help, the account must be signed in again
+#: (``q0t-telegram-mcp auth``). A restarted process stops at startup with
+#: "Not authorized" instead of serving a dead session.
+EXIT_AUTH_LOST = 78
+
+#: Exit status when the client is down and the watchdog could not reconnect it
+#: :data:`MAX_FAILED_RECOVERIES` times in a row. sysexits EX_TEMPFAIL: a restart
+#: is the expected cure.
+EXIT_UNRECOVERABLE = 75
+
+
+def _exit_for_supervisor(code: int, reason: str) -> None:
+    """Leave the process with *code* so whatever supervises it restarts it.
+
+    ``os._exit`` rather than ``sys.exit``: this runs in a background task, where
+    SystemExit would only end the task, and a graceful uvicorn shutdown would
+    exit 0 — which a restart-on-failure policy reads as "stopped on purpose".
+    """
+    print(f"FATAL: {reason}; exiting with status {code} for the supervisor to restart", file=sys.stderr)
+    sys.stderr.flush()
+    os._exit(code)
 
 
 class SharedTelegramClient:
@@ -51,10 +94,19 @@ class SharedTelegramClient:
     exit.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        watchdog_interval: float | None = None,
+        on_fatal: Callable[[int, str], None] = _exit_for_supervisor,
+    ) -> None:
         self._lock = asyncio.Lock()
         self._client: TelegramClientWrapper | None = None
         self._sessions = 0
+        # None disables the watchdog; the process-wide instance turns it on.
+        self._watchdog_interval = watchdog_interval
+        self._watchdog: asyncio.Task | None = None
+        self._on_fatal = on_fatal
 
     @property
     def active_sessions(self) -> int:
@@ -76,8 +128,21 @@ class SharedTelegramClient:
                 # permanently dead server.
                 await client.connect()
                 self._client = client
+                if self._watchdog_interval is not None:
+                    self._watchdog = asyncio.create_task(self._watch(client))
             self._sessions += 1
             return self._client
+
+    def connection_state(self) -> str | None:
+        """Telegram connection state of the held client, or None if none is held.
+
+        None is not a failure: under sse no client exists until the first MCP
+        session connects, and a process that has nothing to be connected yet is
+        not unhealthy.
+        """
+        if self._client is None:
+            return None
+        return self._client.connection_state()
 
     async def release(self) -> None:
         """Release one session's hold, disconnecting when the last one leaves."""
@@ -87,11 +152,48 @@ class SharedTelegramClient:
             self._sessions -= 1
             if self._sessions == 0 and self._client is not None:
                 client, self._client = self._client, None
+                if self._watchdog is not None:
+                    self._watchdog.cancel()
+                    self._watchdog = None
                 await client.disconnect()
+
+    async def _watch(self, client: TelegramClientWrapper) -> None:
+        """Keep *client* usable, or end the process so it gets restarted.
+
+        Without this nothing reconnects a client nobody is calling: Telethon's
+        update loop disconnects on its own when getDifference says the session
+        is gone (and on a few other errors), and from then on the process sat
+        alive and idle — for weeks, in production — with every tool call
+        failing. Each tick asks the wrapper to reconnect if Telethon has given
+        up; a lost session, or a client that will not come back, ends the
+        process with a distinct status instead.
+        """
+        failures = 0
+        while True:
+            await asyncio.sleep(self._watchdog_interval)  # type: ignore[arg-type]
+            try:
+                await client.ensure_connected()
+            except AuthLostError as e:
+                self._on_fatal(EXIT_AUTH_LOST, str(e))
+                return
+            except Exception as e:
+                failures += 1
+                print(
+                    f"Watchdog reconnect failed ({failures}/{MAX_FAILED_RECOVERIES}): {_error_message(e)}",
+                    file=sys.stderr,
+                )
+                if failures >= MAX_FAILED_RECOVERIES:
+                    self._on_fatal(
+                        EXIT_UNRECOVERABLE,
+                        f"Telegram client could not be reconnected {failures} times in a row",
+                    )
+                    return
+            else:
+                failures = 0
 
 
 #: Process-wide client. Module-level so every MCP session reaches the same one.
-shared_client = SharedTelegramClient()
+shared_client = SharedTelegramClient(watchdog_interval=WATCHDOG_INTERVAL_SECONDS)
 
 
 @asynccontextmanager
@@ -572,6 +674,33 @@ def readonly_from_env() -> bool:
     return (os.environ.get("TG_READONLY") or "").strip().lower() in _READONLY_TRUE
 
 
+def _reconnect_first(fn: Callable[..., Awaitable[object]]) -> Callable[..., Awaitable[object]]:
+    """Wrap tool *fn* so a client Telethon gave up on is reconnected before it runs.
+
+    The one place this happens, rather than a line in every tool: each tool
+    already turns exceptions into its own error shape (a dict, or a list with
+    one dict), so the guard stays out of that. If the reconnect itself fails,
+    the reason goes to stderr and the tool runs anyway — it then fails with
+    Telethon's error in the shape its caller expects, exactly as before.
+
+    ``functools.wraps`` keeps the name, docstring, and annotations, and
+    ``inspect.signature`` follows ``__wrapped__``, so MCPServer derives the same
+    input schema and still finds the ``Context`` parameter.
+    """
+
+    @functools.wraps(fn)
+    async def guarded(*args: object, **kwargs: object) -> object:
+        ctx = kwargs.get("ctx", args[0] if args else None)
+        try:
+            client = ctx.request_context.lifespan_context.client  # type: ignore[union-attr]
+            await client.ensure_connected()
+        except Exception as e:
+            print(f"Reconnect before {fn.__name__} failed: {_error_message(e)}", file=sys.stderr)
+        return await fn(*args, **kwargs)
+
+    return guarded
+
+
 def register_tools(server: MCPServer, *, readonly: bool) -> None:
     """Register the tool set on *server*.
 
@@ -589,7 +718,7 @@ def register_tools(server: MCPServer, *, readonly: bool) -> None:
     tools = READ_TOOLS if readonly else READ_TOOLS + WRITE_TOOLS
     for fn in tools:
         if fn.__name__ not in registered:
-            server.add_tool(fn)
+            server.add_tool(_reconnect_first(fn))
 
 
 def _package_version() -> str:
@@ -602,20 +731,40 @@ def _package_version() -> str:
 
 @mcp.custom_route("/health", methods=["GET"])
 async def health(request):
-    """Liveness probe: is the process up, without opening an MCP session.
+    """Health probe: is the process up *and* can it reach Telegram.
 
-    Deliberately dull. It answers before any session exists and is reachable by
-    anything that can reach the port, so it reports only what is already public
-    from the outside: that the process is listening, and which version it is.
-    Never configuration, credentials, or who is logged in.
+    Answers before any session exists and is reachable by anything that can
+    reach the port, so it reports only what is already public from the outside:
+    that the process is listening, which version it is, and whether its
+    Telegram link is up. Never configuration, credentials, or who is logged in.
+
+    ``503`` whenever the held client is not connected — reconnecting after a
+    network loss, or given up on. Before 0.11.1 this always said ``ok``, and a
+    daemon whose client had died in the night reported healthy while every tool
+    call failed. ``telegram`` is ``null`` when no client is held yet (sse with
+    no session), which is not a failure.
+
+    ``"unauthorized"`` (status ``"unauthorized"``, also 503) means the session
+    itself is gone; the watchdog ends the process shortly after, so this is
+    seen only in the window before it does.
     """
+    state = shared_client.connection_state()
+    healthy = state in (None, CONNECTED)
+    if healthy:
+        status = "ok"
+    elif state == UNAUTHORIZED:
+        status = "unauthorized"
+    else:
+        status = "degraded"
     return JSONResponse(
         {
-            "status": "ok",
+            "status": status,
             "name": "q0t-telegram-mcp",
             "version": _package_version(),
+            "telegram": state,
             "active_sessions": shared_client.active_sessions,
-        }
+        },
+        status_code=200 if healthy else 503,
     )
 
 

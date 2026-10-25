@@ -403,18 +403,45 @@ speak streamable HTTP.
 Flags win over environment variables. **stdio remains the default**, so existing configs that
 invoke the package with no arguments are unaffected.
 
-`GET /health` returns `200` with the version, so a supervisor can tell the process is up
+`GET /health` reports whether the process is up **and** whether its Telegram connection is,
 without opening an MCP session:
 
 ```json
-{"status": "ok", "name": "q0t-telegram-mcp", "version": "0.10.0", "active_sessions": 1}
+{"status": "ok", "name": "q0t-telegram-mcp", "version": "0.11.1", "telegram": "connected", "active_sessions": 1}
 ```
+
+| `telegram` | HTTP | Meaning |
+|------------|------|---------|
+| `"connected"` | `200` | Requests reach Telegram. |
+| `"reconnecting"` | `503` | The link dropped (network loss, sleep) and Telethon is retrying in the background. |
+| `"disconnected"` | `503` | The client is down and not retrying; the watchdog (or the next tool call) reconnects it. |
+| `"unauthorized"` | `503` | The session itself is gone (revoked, logged out, key duplicated). The process exits with status `78` within a minute; run `auth` again. |
+| `null` | `200` | No client held yet (only under `sse`, before the first session). |
+
+`status` is `"ok"` with a `200`, `"unauthorized"` with `"telegram": "unauthorized"`, and
+`"degraded"` with any other `503`, so a supervisor can key off either field. Before 0.11.1 it
+always said `ok`, even with a dead client.
+
+**A client that cannot be used ends the process.** A watchdog checks the held client every
+60 s. If Telethon has given up on it, the watchdog reconnects it. If Telegram says the
+session is gone, the process exits with status **`78`**. A restart then stops at startup with
+`Not authorized` until someone runs `auth` again. If the client is down and five reconnects
+in a row fail, the process exits with status **`75`**, and a restart is the expected fix. A
+plain network outage does not count toward that limit, because Telethon keeps retrying it in
+the background. Run the server under something that restarts it on a non-zero exit.
 
 Since 0.10.0 the Telegram connection is opened when the process starts, not when the first
 MCP session arrives, and is held until the server stops. A server with no authorized session
 therefore **fails to start** rather than booting and answering `/health` while every tool
-call fails — so `/health` answering at all already means Telegram is connected. Run
-`q0t-telegram-mcp check` before starting if you are unsure the session is still good.
+call fails. Run `q0t-telegram-mcp check` before starting if you are unsure the session is
+still good.
+
+**Network loss is survived, however long.** Since 0.11.1 Telethon retries forever (every
+5 s) instead of giving up after five attempts, so a laptop that sleeps with the lid closed
+comes back on its own after wake. If the client has given up anyway, the next tool call
+reconnects it first (waiting up to 30 s) instead of failing with `Cannot send requests while
+disconnected`. A tool call made while the network is still gone waits for it rather than
+failing at once.
 
 The same change makes `active_sessions` a hold count rather than a client count: in `http`
 mode it reads `1` for as long as the server runs, however many clients are attached. Do not

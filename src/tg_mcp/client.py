@@ -1,19 +1,23 @@
 from __future__ import annotations
 
+import asyncio
 import os
+import sys
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
 import telethon.utils
 from telethon import TelegramClient
-from telethon.errors import UsernameNotOccupiedError
+from telethon.errors import AuthKeyError, UnauthorizedError, UsernameNotOccupiedError
+from telethon.errors.common import AuthKeyNotFound
 from telethon.tl import types
 from telethon.tl.functions.messages import (
     GetDialogFiltersRequest,
     SendReactionRequest,
     UpdateDialogFilterRequest,
 )
+from telethon.tl.functions.updates import GetStateRequest
 from telethon.tl.types import ReactionEmoji
 
 from .config import Config
@@ -41,6 +45,16 @@ from .folders import (
 )
 from .media import expand_paths, group_for_albums, missing_files
 from .models import Button, Dialog, Folder, Message, Reaction, UserInfo
+
+
+class AuthLostError(RuntimeError):
+    """The session is no longer authorized and reconnecting cannot fix it.
+
+    Raised by :meth:`TelegramClientWrapper.ensure_connected` once Telegram has
+    answered with one of :data:`AUTH_LOSS_ERRORS` (the session was terminated
+    from another device, the auth key was revoked or duplicated). Only a fresh
+    ``q0t-telegram-mcp auth`` brings it back.
+    """
 
 
 class PartialSendError(RuntimeError):
@@ -172,6 +186,35 @@ def _describe_media(message) -> str | None:
     return None
 
 
+#: Seconds Telethon sleeps between reconnect attempts. With unlimited retries
+#: this is the only thing pacing the loop while the network is gone (a closed
+#: laptop lid fails each attempt instantly with ENETUNREACH), so it trades how
+#: soon a woken machine is back against how much stderr a night of sleep writes.
+RETRY_DELAY_SECONDS = 5
+
+#: Upper bound on the reconnect a tool call performs when it finds the client
+#: dead. The Telethon client retries forever, so without this a call made with
+#: no network would hang instead of answering with an error.
+RECONNECT_TIMEOUT_SECONDS = 30
+
+#: Values of :meth:`TelegramClientWrapper.connection_state`.
+CONNECTED = "connected"
+RECONNECTING = "reconnecting"
+DISCONNECTED = "disconnected"
+UNAUTHORIZED = "unauthorized"
+
+#: Errors that mean the *session* is gone, not the network: SESSION_REVOKED and
+#: AUTH_KEY_UNREGISTERED are UnauthorizedError (401), AUTH_KEY_DUPLICATED is an
+#: AuthKeyError (406), and AuthKeyNotFound is the transport-level 404 for a key
+#: the server has forgotten. Reconnecting succeeds after all of them — MTProto
+#: does not care — and every request after it fails again.
+AUTH_LOSS_ERRORS: tuple[type[BaseException], ...] = (
+    UnauthorizedError,
+    AuthKeyError,
+    AuthKeyNotFound,
+)
+
+
 class TelegramClientWrapper:
     """Async wrapper around :class:`telethon.TelegramClient`.
 
@@ -182,6 +225,13 @@ class TelegramClientWrapper:
     def __init__(self, config: Config) -> None:
         self._config = config
         self._client: TelegramClient | None = None
+        # Several tool calls can find the client dead at the same instant; only
+        # one of them should reconnect, the rest wait for it.
+        self._reconnect_lock = asyncio.Lock()
+        # Sticky: once Telegram says the session is gone it stays gone for the
+        # life of this process. Telethon's own record of it (_updates_error) is
+        # reset by the next connect(), so it is copied here before that.
+        self._auth_error: BaseException | None = None
 
     async def connect(self) -> None:
         """Open a connection to Telegram and verify the session is authorized.
@@ -195,11 +245,23 @@ class TelegramClientWrapper:
         # and deserializing the update difference — the path that raises
         # TypeNotFoundError when Telegram sends a TL constructor newer than the
         # installed Telethon layer (the intermittent "garbage bytes" crash).
+        #
+        # connection_retries=-1: Telethon's default is 5, after which its
+        # background reconnect gives up, marks the client disconnected for good
+        # and every later request fails with "Cannot send requests while
+        # disconnected". A long-lived daemon on a laptop loses the network on
+        # every lid close, so 5 attempts lasted seconds. Negative means
+        # unlimited (telethon.helpers.retry_range), for both the initial connect
+        # and the auto-reconnect loop (MTProtoSender._connect / _reconnect).
+        # The cost: connecting with no network waits for it instead of failing.
         self._client = TelegramClient(
             str(self._config.session_path),
             self._config.app_id,
             self._config.api_hash,
             receive_updates=False,
+            connection_retries=-1,
+            retry_delay=RETRY_DELAY_SECONDS,
+            auto_reconnect=True,
         )
         await self._client.connect()
         if not await self._client.is_user_authorized():
@@ -211,6 +273,100 @@ class TelegramClientWrapper:
         """Close the Telegram connection. Safe to call even if not connected."""
         if self._client is not None:
             await self._client.disconnect()
+
+    def connection_state(self) -> str:
+        """Return :data:`CONNECTED`, :data:`RECONNECTING`, or :data:`DISCONNECTED`.
+
+        ``TelegramClient.is_connected()`` alone is not enough: it reports the
+        *user's intent* (``MTProtoSender._user_connected``), which stays True for
+        the whole of a background reconnect while no request can get through.
+        The transport check is what tells "up" from "trying". It is a private
+        Telethon method, read defensively so a future rename degrades to the
+        coarser answer rather than an exception in ``/health``.
+        """
+        if self.auth_error() is not None:
+            return UNAUTHORIZED
+        client = self._client
+        if client is None or not client.is_connected():
+            return DISCONNECTED
+        transport_up = getattr(getattr(client, "_sender", None), "_transport_connected", None)
+        if callable(transport_up) and not transport_up():
+            return RECONNECTING
+        return CONNECTED
+
+    def auth_error(self) -> BaseException | None:
+        """The error that showed this session is no longer authorized, or None.
+
+        Two sources. Ours: a check after reconnecting. Telethon's: its update
+        loop polls ``getDifference`` and, on a 401/406 from it, records the
+        error in ``_updates_error`` and **calls disconnect() itself** — the
+        locally initiated "Disconnecting from …" with nothing reconnecting
+        afterwards. That private attribute is read defensively; a rename only
+        delays detection until the next reconnect check.
+        """
+        if self._auth_error is None and self._client is not None:
+            err = getattr(self._client, "_updates_error", None)
+            if isinstance(err, AUTH_LOSS_ERRORS):
+                self._auth_error = err
+        return self._auth_error
+
+    async def _verify_authorized(self) -> None:
+        """Make one request that needs a logged-in account.
+
+        ``is_user_authorized()`` cannot be used for this: Telethon caches its
+        first answer for the life of the client, so it keeps saying True after
+        the session has been revoked.
+        """
+        try:
+            await self._client(GetStateRequest())
+        except AUTH_LOSS_ERRORS as e:
+            self._auth_error = e
+            raise AuthLostError(f"Telegram session is no longer authorized: {type(e).__name__}") from e
+
+    async def ensure_connected(self) -> bool:
+        """Reconnect if Telethon has given up on the connection.
+
+        With unlimited retries Telethon should never give up on a network
+        outage, but it still does on some errors (an auth key the server no
+        longer knows, an unexpected failure) — and then stays down until
+        someone calls ``connect()``. This is that someone, called before every
+        tool call. A reconnect already in progress in the background is left
+        alone: requests queue behind it.
+
+        Returns:
+            True if a reconnect was performed, False if none was needed.
+
+        A disconnect caused by losing the session is not reconnected: Telethon
+        would connect fine and every request would fail again. That raises
+        :class:`AuthLostError` instead, and so does a reconnect after which the
+        account turns out to be logged out.
+
+        Raises:
+            AuthLostError: If the session is no longer authorized.
+            ConnectionError: If the reconnect does not finish within
+                :data:`RECONNECT_TIMEOUT_SECONDS`.
+        """
+        client = self._client
+        lost = self.auth_error()
+        if lost is not None:
+            raise AuthLostError(f"Telegram session is no longer authorized: {type(lost).__name__}")
+        if client is None or client.is_connected():
+            return False
+        async with self._reconnect_lock:
+            if client.is_connected():  # another caller got there first
+                return False
+            print("Telegram client is disconnected; reconnecting before the call", file=sys.stderr)
+            try:
+                await asyncio.wait_for(client.connect(), RECONNECT_TIMEOUT_SECONDS)
+                await asyncio.wait_for(self._verify_authorized(), RECONNECT_TIMEOUT_SECONDS)
+            except TimeoutError:
+                # A cancelled connect can leave a half-open connection behind;
+                # close it so the next attempt starts clean.
+                await client.disconnect()
+                raise ConnectionError(
+                    f"Telegram is unreachable: reconnect did not finish in {RECONNECT_TIMEOUT_SECONDS}s"
+                ) from None
+            return True
 
     async def is_authorized(self) -> bool:
         """Return True if the current session is authorized with Telegram."""
